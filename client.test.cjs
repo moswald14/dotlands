@@ -7,7 +7,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const E=require('./engine.js');
 function harness() {
-  const elements=new Map(),timers=new Map(),storage=new Map(),requests=[],copied=[];let timerId=0,pending=[];
+  const elements=new Map(),timers=new Map(),storage=new Map(),requests=[],copied=[],sessions=[];let timerId=0,pending=[];
   function el(id) {
     if(!elements.has(id))elements.set(id,{id,hidden:['game','lobby'].includes(id),open:false,value:id==='country-count'?'4':id==='human-count'?'2':'',dataset:{},attributes:{},style:{setProperty(){}},setAttribute(name,value){this.attributes[name]=value;},addEventListener(){},showModal(){this.open=true;},close(){this.open=false;},focus(){},select(){},innerHTML:'',textContent:'',isConnected:true});
     return elements.get(id);
@@ -22,8 +22,16 @@ function harness() {
     setTimeout:(fn,ms)=>{timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),
     fetch:(...args)=>{requests.push(args);return new Promise(resolve=>pending.push({args,resolve}));}
   };
+  async function sessionStub(config,join=false,resume=false) {
+    const response=await context.fetch(config.url+'/api/rooms'+(join||resume?'/'+(config.room||config.code)+(resume?'':'/join'):''),{method:resume?'GET':'POST'});
+    const data=await response.json();
+    const session={initial:data,credentials:{url:config.url,code:data.code,seat:data.seat,token:data.token,role:join||resume?'guest':'host'},closed:false,config,
+      async request(route,body){const response=await context.fetch(config.url+'/api'+route,{method:body===undefined?'GET':'POST'});return response.json();},close(){this.closed=true;}};
+    sessions.push(session);return session;
+  }
+  context.DotlandsRoom={create:c=>sessionStub(c),join:c=>sessionStub(c,true),reconnect:c=>sessionStub(c,false,true)};
   vm.createContext(context);
-  const source=fs.readFileSync(path.join(__dirname,'app.js'),'utf8').replace(/\}\)\(\);\s*$/,`globalThis.clientTest={menu,pollRoom,startRoom,reconnect,enterRoom,startLocal,runAI,remoteAction,acceptSnapshot,pickTile,commit,render,copyInvite,setSession(s){online=s.online;room=s.room;state=s.state;},getSession(){return {online,room,state,busy,aiRunning};}};})();`);
+  const source=fs.readFileSync(path.join(__dirname,'app.js'),'utf8').replace(/\}\)\(\);\s*$/,`globalThis.clientTest={menu,pollRoom,startRoom,reconnect,enterRoom,startLocal,runAI,remoteAction,acceptSnapshot,pickTile,commit,render,copyInvite,myTurn,setSession(s){online=s.online;room=s.room;state=s.state;},getSession(){return {online,room,state,busy,aiRunning};}};})();`);
   vm.runInContext(source,context,{filename:'app.js'});
   const connection={url:'https://server.example',code:'ABC234',seat:0,token:'test-token'};
   const lobby={code:'ABC234',revision:1,phase:'lobby',maxPlayers:4,hostSeat:0,seat:0,players:[{seat:0,name:'Moss'}]};
@@ -31,12 +39,12 @@ function harness() {
   context.clientTest.acceptSnapshot(lobby);
   const respond=(data,status=200)=>{assert.ok(pending.length,'Expected a pending request');pending.shift().resolve({ok:status<400,status,json:async()=>data});};
   const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
-  const wake=async()=>{respond({ok:true,game:'Dotlands',protocol:1});await flush();};
+  const wake=async()=>{respond({ok:true,game:'Dotlands',protocol:1,doodletick:1});await flush();};
   const fireTimer=async(ms)=>{
     const entry=[...timers].find(([,timer])=>timer.ms===ms);assert.ok(entry,`Expected a ${ms} ms timer`);
     timers.delete(entry[0]);entry[1].fn();await flush();
   };
-  return {client:context.clientTest,el,respond,connection,lobby,storage,timers,fireTimer,flush,wake,requests,copied};
+  return {client:context.clientTest,el,respond,connection,lobby,storage,timers,fireTimer,flush,wake,requests,copied,sessions};
 }
 test('Leaving an online room keeps the menu open when an earlier poll finishes',async()=>{
   const h=harness();const request=h.client.pollRoom();
@@ -60,7 +68,7 @@ test('Starting a local game ignores a late online poll',async()=>{
   assert.equal(h.client.getSession().online,null);
 });
 test('Menu during reconnect ignores the saved room response',async()=>{
-  const h=harness();h.storage.set('dotlands.room.v1',JSON.stringify(h.connection));h.client.menu();
+  const h=harness();h.storage.set('doodletick.dotlands.room.v1',JSON.stringify(h.connection));h.client.menu();
   const request=h.client.reconnect();await h.wake();h.client.menu();
   h.respond({...h.lobby,revision:3,phase:'playing',state:E.createGame({seed:'reconnected'})});await request;
   assert.equal(h.el('welcome').hidden,false);assert.equal(h.el('game').hidden,true);
@@ -72,7 +80,8 @@ test('Leaving while creating a room ignores the late room response',async()=>{
   const request=h.client.enterRoom(false);await h.wake();h.client.menu();
   h.respond({...h.lobby,token:'new-token'});await request;
   assert.equal(h.el('welcome').hidden,false);assert.equal(h.el('lobby').hidden,true);
-  assert.equal(h.client.getSession().online,null);assert.equal(h.storage.has('dotlands.room.v1'),false);
+  assert.equal(h.client.getSession().online,null);assert.equal(h.storage.has('doodletick.dotlands.room.v1'),false);
+  assert.equal(h.sessions[0].closed,true,'Late peer connection must be closed');
   assert.equal(h.timers.size,0);
 });
 test('A late online Start response cannot overwrite a new local match',async()=>{
@@ -171,4 +180,35 @@ test('Room invitations open the standalone hosted game and never share a seat to
   const h=harness();await h.client.copyInvite();
   assert.match(h.copied[0],/https:\/\/server\.example\/\?room=ABC234/);
   assert.doesNotMatch(h.copied[0],/itch\.io|test-token|token=/);
+});
+
+test('An invalid peer snapshot cannot replace a valid board or room',()=>{
+  const h=harness(),state=E.createGame({seed:'safe-board'});
+  h.client.setSession({online:h.connection,room:h.lobby,state});
+  assert.throws(()=>h.client.acceptSnapshot({...h.lobby,revision:2,phase:'playing',state:{tiles:[]}}));
+  assert.equal(h.client.getSession().state,state);
+  assert.equal(h.client.getSession().room,h.lobby);
+});
+
+test('Leaving a live peer room closes it and ignores subsequent callbacks',async()=>{
+  const h=harness();h.client.menu();h.el('server-url').value=h.connection.url;
+  const request=h.client.enterRoom(false);await h.wake();h.respond({...h.lobby,token:'new-token'});await request;
+  const session=h.sessions[0];h.client.menu();
+  assert.equal(session.closed,true);
+  session.config.onSnapshot({...h.lobby,revision:2,phase:'playing',state:E.createGame()});
+  session.config.onStatus({state:'connected',transport:'direct'});
+  assert.equal(h.client.getSession().state,null);
+  assert.equal(h.el('welcome').hidden,false);
+  assert.equal(h.el('connection-status').hidden,true);
+});
+
+test('A lost peer connection freezes actions and recovery unlocks them',async()=>{
+  const h=harness();h.client.menu();h.el('server-url').value=h.connection.url;
+  const request=h.client.enterRoom(false);await h.wake();h.respond({...h.lobby,token:'new-token'});await request;
+  const session=h.sessions[0];session.config.onSnapshot({...h.lobby,revision:2,phase:'playing',state:E.createGame()});
+  session.config.onStatus({state:'disconnected',reason:'Host disconnected'});
+  assert.equal(h.client.myTurn(),false);
+  session.config.onStatus({state:'connected',transport:'relay'});
+  assert.equal(h.client.myTurn(),true);
+  assert.match(h.el('connection-status').textContent,/Connection assist/);
 });

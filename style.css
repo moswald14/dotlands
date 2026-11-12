@@ -7,3 +7,5 @@
 .board-wrap{overflow:hidden;overflow:clip}
 @media(max-height:550px) and (min-width:681px){.topbar{height:55px}.game-top{margin:5px 0}.board-wrap{height:calc(100dvh - 115px);min-height:220px}.standings{gap:6px}.country-card{padding:6px}.country-symbol{height:25px;width:25px}.country-name{font-size:11px}.event-log{font-size:9px;min-height:26px;padding:7px 0}.controls{min-height:0;padding:10px;gap:8px}.instruction h2{font-size:16px}.instruction p{font-size:10px;line-height:1.4}.end-turn{min-height:40px;padding:10px}.action-buttons .primary{min-height:40px;padding:10px}.action-info h2{font-size:14px}.action-info p{font-size:10px}.action-math{font-size:10px}.action-buttons{gap:8px}}
 .action-panel{grid-template-columns:minmax(0,1fr) auto}.action-math{font-size:14px;font-weight:600;margin-top:8px}@media(max-width:680px){.action-panel{grid-template-columns:1fr;gap:13px}.action-buttons{grid-column:auto}.action-math{font-size:13px}.action-info p{font-size:11px}}@media(max-height:550px) and (min-width:681px){.action-math{font-size:12px}}
+
+.connection-status { margin: 0 0 8px; text-align: right; font-size: 11px; color: #45675b; }

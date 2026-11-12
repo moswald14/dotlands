@@ -1,6 +1,6 @@
 # Dotlands private online rooms
 
-Same-phone multiplayer works entirely in the HTML game. Separate-phone private rooms use this small Node.js server to keep all players on the same board. The server applies the rules; a client cannot submit its own replacement game state.
+Same-phone multiplayer works entirely in the HTML game. Separate-phone private rooms use Doodletick peer connections. The host browser applies the game rules. This Node.js service serves the game, exchanges connection setup messages, and assists game messages over HTTPS when WebRTC cannot connect. See DOODLETICK.md for the current protocol. The older authoritative HTTP game API below remains available for compatibility, but the v1.2 UI uses Doodletick.
 
 ## Run locally
 
@@ -33,15 +33,15 @@ The included `render.yaml` is a Render Blueprint for the source folder at the ro
 
 The default allows game pages hosted on itch.io or elsewhere to call the API without cookies. Room actions still need the player's random secret token. For a public deployment, you can limit `ALLOWED_ORIGINS` to the actual origin of the embedded game iframe and the server's own origin. An itch.io project page's origin may differ from the iframe serving its game. Do not expose players' tokens in invite links, screenshots, or logs.
 
-Refresh reconnects when the game still has the saved room code and player token. Closing a browser does not remove its seat. To restart or change the lineup after a match has started, create a new room. There is no host migration or kick command in this version.
+Guests can reconnect with their saved room and transport credentials while the host remains open. The host cannot resume after a reload or closing its game. Leaving a room deliberately marks the connection offline. To restart or change the lineup after a match has started, create a new room. There is no host migration or kick command in this version.
 
-## HTTP contract
+## Legacy HTTP game contract
 
 The configured server address is the origin, such as `https://your-room-server.example`, without an `/api` suffix. Requests and responses use JSON. Authenticated endpoints need `Authorization: Bearer TOKEN`.
 
 | Method and route | Body | Result |
 | --- | --- | --- |
-| `GET /api/health` | — | `{ok:true,game:"Dotlands",protocol:1}` |
+| `GET /api/health` | — | `{ok:true,game:"Dotlands",protocol:1,doodletick:1}` |
 | `POST /api/rooms` | `{name,maxPlayers:2..4,seed?,radius?:3\|4}` | New lobby snapshot, including `token` and `seat:0`. |
 | `POST /api/rooms/CODE/join` | `{name}` | Lobby snapshot, including that player's `token` and `seat`. |
 | `GET /api/rooms/CODE` | — | Authenticated current snapshot; use for polling and reconnection. |

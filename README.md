@@ -10,7 +10,7 @@ Source repository: [moswald14/dotlands](https://github.com/moswald14/dotlands).
 - **Pass & play:** two to four people share one screen, with computers in spare seats.
 - **Online:** a host creates a four-seat private room, friends join by invitation or code, and empty seats become computers at the start.
 
-Solo and shared-screen games run entirely in the single HTML file. Private online rooms use the included Node.js server. The published client can include its hosted address, so friends only need a room invitation or code. See `SERVER.md` to deploy your own server.
+Solo and shared-screen games run entirely in the single HTML file. Private online rooms use Doodletick: the host browser runs the game, browsers exchange moves over WebRTC, and the included Node.js service provides room discovery and an HTTPS fallback when a direct connection is unavailable. The published client can include its hosted address, so friends only need a room invitation or code. See `SERVER.md` to deploy your own server.
 
 ## Rules
 
@@ -31,7 +31,11 @@ Ending a turn adds one dot to every held hex, capped at nine. Neutral tiles do n
 | `build.mjs` | Produces a self-contained `index.html` and checks its embedded JavaScript syntax. |
 | `engine.test.mjs` | Rules, invariants, seeded maps, and complete AI simulations. |
 | `client.test.cjs` | Room navigation, reconnect races, and interrupted computer turns. |
-| `server.cjs` | Authoritative private-room server. |
+| `server.cjs` | Serves the game, Doodletick routes, and the legacy room API. |
+| `doodletick-server.cjs` | Reusable signaling mailbox and assisted transport; no game rules. |
+| `doodletick-rooms.js` | Reusable WebRTC data connections with assisted fallback. |
+| `dotlands-room.js` | Host-side game rules, seat authentication, snapshots, and bots. |
+| `DOODLETICK.md` | Shared room API and network behavior. |
 | `server.test.cjs` | HTTP room workflows, authentication, revisions, and limits. |
 | `SERVER.md` | Server setup, hosting limits, configuration, and API contract. |
 | `render.yaml` | Optional deployment configuration. |
@@ -79,8 +83,12 @@ You can also set the `DOTLANDS_SERVER` environment variable. Replace the example
 
 ## Persistence and limits
 
-One local match is saved in browser storage when available. Starting a new local match replaces it. Online seat credentials are saved separately; reconnecting requires that same browser storage and a still-existing room. Online rooms are in memory, expire after 24 idle hours, and disappear on server restart. Run one server instance; this version does not synchronize multiple instances.
+One local match is saved in browser storage when available. Starting a new local match replaces it. Online seat credentials are saved separately; reconnecting requires that same browser storage and a still-existing room. The host must keep its game open. Closing or reloading the host ends the match; guests can return to the same seat while the host remains open. Connection mailboxes expire after 24 idle hours or a server restart. There is no host migration. Run one connection server instance.
 
-A free Render server sleeps after inactivity and may take about a minute to wake. Wait, then retry if your first connection times out. A restart, redeploy, or shutdown loses active rooms. See [Render's free-service limits](https://render.com/docs/free).
+A free Render server sleeps after inactivity and may take about a minute to wake. Wait, then retry if your first connection times out. A restart, redeploy, or shutdown clears the room directory; create a new room if reconnection fails. See [Render's free-service limits](https://render.com/docs/free).
 
 Country names, symbols, and colors identify players. New games generate a connected continent with a random coastline and 33–39 land hexes. All countries begin with three connected hexes and 13 dots. A stored seed reproduces the same map; existing local saves retain their original map. The engine also supports a larger 48–54-hex variant.
+
+Live connection service and standalone game: https://dotlands-rooms.onrender.com
+
+Doodletick does not require players to create an account. This game module does not access the Keeper identity vault or file library. See `DOODLETICK.md`.

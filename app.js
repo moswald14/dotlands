@@ -1,4 +1,4 @@
-/* Dotlands interface. Uses the same rules locally and on the authoritative room server. */
+/* Dotlands interface. Local play and Doodletick host-authoritative peer rooms. */
 (() => {
   'use strict';
   const E = globalThis.DotlandsEngine;
@@ -7,16 +7,17 @@
   const SYMBOLS = ['○','△','◇','✳'];
   const NAMES = ['Moss','Ember','Honey','Iris'];
   const COLORS = ['#78aa8b','#dc917d','#d5b45d','#afa1c7'];
-  const SAVE_KEY = 'dotlands.local.v1', ROOM_KEY = 'dotlands.room.v1';
+  const SAVE_KEY = 'dotlands.local.v1', ROOM_KEY = 'doodletick.dotlands.room.v1';
   const DEFAULT_SERVER = ''; // Set to your HTTPS room server before building the itch.io release.
   let state = null, mode = 'solo', selected = null, target = null;
   let online = null, room = null, polling = null, busy = false, aiRunning = false, aiGeneration = 0, networkGeneration = 0;
+  let peerSession = null, peerConnected = true;
   let shownWinner = false, soundOn = false, audio = null, toastTimer = null, lastFocus = null;
   const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
   function readStorage(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } }
   function writeStorage(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } }
   function validSave() { const s = readStorage(SAVE_KEY); return s && E.validateState(s).ok ? s : null; }
-  function save() { if (!online && state) writeStorage(SAVE_KEY, state); }
+  function save() { if (!online && state) writeStorage(SAVE_KEY, state);else if(online&&peerSession)rememberRoom(); }
   function toast(text) { $('toast').textContent=text; $('toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('toast').hidden=true, 3400); }
   function log(text) { $('event-log').textContent=text; }
   function playTone(type='move') {
@@ -32,9 +33,10 @@
   $('modal').addEventListener('click',e=>{if(e.target===$('modal') && $('modal').dataset.locked!=='true')closeModal();});
   function showScreen(id) { const changed=$(id).hidden;for(const x of ['welcome','game','lobby'])$(x).hidden=x!==id;if(changed)window.scrollTo?.(0,0); }
   function stopPolling() { clearTimeout(polling); polling=null; }
+  function closePeer() { const old=peerSession;peerSession=null;peerConnected=true;if(old){if(online?.role==='host')writeStorage(ROOM_KEY,null);old.close();}$('connection-status').hidden=true; }
   function menu() {
     if ($('modal').open) closeModal();
-    aiGeneration++; networkGeneration++; aiRunning=false; busy=false; save(); stopPolling(); online=null;room=null;state=null;showScreen('welcome');
+    aiGeneration++; networkGeneration++; aiRunning=false; busy=false; save(); stopPolling();closePeer(); online=null;room=null;state=null;showScreen('welcome');
     $('create-room').disabled=$('join-room').disabled=$('start-room').disabled=false;
     $('continue').hidden=!validSave(); $('reconnect').hidden=!readStorage(ROOM_KEY);
   }
@@ -51,7 +53,7 @@
     $('human-count').value=String(Math.min(old,count));
   }
   function startLocal() {
-    stopPolling(); online=null; room=null; aiGeneration++; networkGeneration++; aiRunning=false; busy=false; selected=target=null; shownWinner=false;
+    stopPolling();closePeer(); online=null; room=null; aiGeneration++; networkGeneration++; aiRunning=false; busy=false; selected=target=null; shownWinner=false;
     const count=+$('country-count').value, humanCount=mode==='solo'?1:+$('human-count').value;
     const seed=globalThis.crypto?.getRandomValues?crypto.getRandomValues(new Uint32Array(1))[0].toString(36):Date.now().toString(36);
     state=E.createGame({seed,radius:3,players:Array.from({length:count},(_,i)=>({name:NAMES[i],color:COLORS[i],controller:i<humanCount?'human':'ai'}))});
@@ -59,7 +61,7 @@
     if(humanCount>1)handoff();
   }
   function current() { return state.players[state.currentPlayer]; }
-  function myTurn() { return state && state.winner===null && !busy && (online?state.currentPlayer===online.seat:current().controller==='human'&&!aiRunning); }
+  function myTurn() { return state && state.winner===null && !busy && (online?peerConnected&&state.currentPlayer===online.seat:current().controller==='human'&&!aiRunning); }
   function lighten(hex, mix=.38) { const n=parseInt(hex.slice(1),16);return '#'+[n>>16,(n>>8)&255,n&255].map(v=>Math.round(v+(244-v)*mix).toString(16).padStart(2,'0')).join(''); }
   function coordinates(t,size=32) { return {x:Math.sqrt(3)*(t.q+t.r/2)*size,y:1.5*t.r*size}; }
   function polygon(x,y,size) {return Array.from({length:6},(_,i)=>{const a=(i*60-30)*Math.PI/180;return `${(x+Math.cos(a)*size).toFixed(2)},${(y+Math.sin(a)*size).toFixed(2)}`;}).join(' ');}
@@ -89,6 +91,7 @@
   }
   function renderControls() {
     if(state.winner!==null){$('controls').innerHTML=`<div class="instruction"><h2>${esc(state.players[state.winner].name)} takes the continent.</h2><p>A little country became a whole world.</p></div><button id="play-again" class="primary end-turn">Play again ↗</button>`;$('play-again').onclick=menu;return;}
+    if(online&&!peerConnected){$('controls').innerHTML='<div class="instruction"><h2>Connection paused.</h2><p>Keep this page open while Doodletick reconnects. The host needs to keep their game open too.</p></div>';return;}
     if(!myTurn()){
       const yours=online?E.stats(state)[online.seat]:null;
       $('controls').innerHTML=`<div class="instruction"><h2>${busy?'Sending your move…':yours&&!yours.tiles?'Your country has fallen.':esc(current().name)+' is thinking'}<span class="thinking"></span></h2><p>${busy?'Waiting for the table to update.':yours&&!yours.tiles?'Stay to see who takes the continent, or start another game.':online?'The map updates automatically. Your turn will appear here.':'The computer follows the same rules you do.'}</p></div>`;
@@ -187,6 +190,7 @@
     return url.href.replace(/\/+$/,'');
   }
   async function api(path,body,connection=online,timeout=15000) {
+    if(peerSession && connection===online && path!=='/health')return peerSession.request(path,body);
     const base=connection?.url||baseURL(),headers={};if(body!==undefined)headers['Content-Type']='application/json';if(connection?.token)headers.Authorization='Bearer '+connection.token;
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
     try {const response=await fetch(base+'/api'+path,{method:body===undefined?'GET':'POST',headers,body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal,cache:'no-store',credentials:'omit'});if([502,503,504].includes(response.status)){const e=new Error('The room server is waking up. Please try again shortly.');e.retryable=true;throw e;}let data;try{data=await response.json();}catch{throw new Error('That address is not a Dotlands game server.');}if(!response.ok){const e=new Error(data.error||'The room could not update.');e.status=response.status;throw e;}return data;}
@@ -196,19 +200,37 @@
     const deadline=Date.now()+75000;let failure;
     $('online-status').textContent='Connecting… The room server may take a minute to wake.';
     while(generation===networkGeneration&&Date.now()<deadline){
-      try{const health=await api('/health',undefined,connection,Math.min(15000,deadline-Date.now()));if(generation!==networkGeneration)return false;if(!health?.ok||health.game!=='Dotlands'||health.protocol!==1)throw new Error('That address is not a Dotlands game server.');return true;}
+      try{const health=await api('/health',undefined,connection,Math.min(15000,deadline-Date.now()));if(generation!==networkGeneration)return false;if(!health?.ok||health.game!=='Dotlands'||health.protocol!==1||health.doodletick!==1)throw new Error('That address is not a Dotlands game server.');return true;}
       catch(e){if(generation!==networkGeneration)return false;if(!e.retryable)throw e;failure=e;$('online-status').textContent='Waking the room server… This can take a minute.';if(Date.now()<deadline)await delay(Math.min(2500,deadline-Date.now()));}
     }
     if(generation!==networkGeneration)return false;
     throw failure||new Error('The room server is still waking up. Please try again.');
   }
-  function rememberRoom() {if(online)writeStorage(ROOM_KEY,online);}
+  function rememberRoom() {if(online){if(peerSession)Object.assign(online,peerSession.credentials);writeStorage(ROOM_KEY,online);}}
+  function peerCallbacks(generation) {
+    return {
+      onSnapshot(data) {if(generation!==networkGeneration||!online)return;acceptSnapshot(data);},
+      onStatus(status) {
+        if(generation!==networkGeneration||status.state==='peer-waiting')return;
+        const connected=status.state==='connected';
+        peerConnected=!['disconnected','closed','error'].includes(status.state);
+        const text=connected?(status.transport==='direct'?'Doodletick · Direct peer connection':status.transport==='mixed'?'Doodletick · Direct + connection assist':'Doodletick · Connection assist'):status.reason||(status.state==='closed'?'This room is closed. Start a new room.':'Doodletick · Connecting…');
+        $('connection-status').textContent=text;$('connection-status').hidden=false;
+        $('connection-status').dataset.transport=status.transport||'';
+        if(!peerConnected){$('lobby-status').textContent=text;log(text);}
+        if(state&&!$('game').hidden)renderControls();
+      }
+    };
+  }
   function acceptSnapshot(data) {
+    if(!data||typeof data.code!=='string'||!Number.isInteger(data.revision)||data.revision<1||!Number.isInteger(data.seat)||data.seat<0||data.seat>3||!Array.isArray(data.players)||data.players.length<1||data.players.length>4||!['lobby','playing'].includes(data.phase)||data.maxPlayers<2||data.maxPlayers>4||data.hostSeat!==0)throw new Error('The room sent an invalid update.');
+    if(data.players.some(p=>!p||typeof p.name!=='string'||p.name.length>22||!Number.isInteger(p.seat)||p.seat<0||p.seat>3)||new Set(data.players.map(p=>p.seat)).size!==data.players.length)throw new Error('The room sent invalid players.');
+    if(data.phase==='playing'&&!E.validateState(data.state).ok)throw new Error('The room sent an invalid game.');
     if(room&&room.code===data.code&&room.revision>data.revision)return;
     const changed=!room||room.revision!==data.revision,oldTurn=state?.turn;room=data;
     if(online)online.seat=data.seat;
     if(data.phase==='lobby'){showScreen('lobby');renderLobby();return;}
-    if(changed||$('game').hidden){state=data.state;if(!E.validateState(state).ok)throw new Error('The server sent an invalid game.');selected=target=null;showScreen('game');render();if(oldTurn!==state.turn)log(`${current().name}’s turn. ${current().controller==='ai'?'Computer is playing.':'The table is up to date.'}`);}
+    if(changed||$('game').hidden){state=data.state;selected=target=null;showScreen('game');render();if(oldTurn!==state.turn)log(`${current().name}’s turn. ${current().controller==='ai'?'Computer is playing.':'The table is up to date.'}`);}
   }
   function schedulePoll(ms=1700) {stopPolling();if(online)polling=setTimeout(pollRoom,ms);}
   async function pollRoom() {
@@ -219,14 +241,17 @@
   }
   async function enterRoom(join) {
     if(busy)return;const generation=++networkGeneration;busy=true;$('online-status').textContent='Connecting to your table…';$('create-room').disabled=$('join-room').disabled=true;
-    try {const url=baseURL(),name=$('player-name').value.trim()||'Player';if(name.length>22)throw new Error('Keep your name to 22 characters or fewer.');const code=$('room-code').value.trim().toUpperCase();if(join&&!/^[A-Z2-9]{6}$/.test(code))throw new Error('Enter the six-character room code.');const connection={url};if(!await wakeServer(connection,generation))return;const data=await api(join?'/rooms/'+code+'/join':'/rooms',join?{name}:{name,maxPlayers:4,radius:3,seed:Date.now().toString(36)},connection);if(generation!==networkGeneration)return;aiGeneration++;aiRunning=false;online={url,code:data.code,token:data.token,seat:data.seat};room=null;state=null;shownWinner=false;rememberRoom();acceptSnapshot(data);schedulePoll();}
+    try {const url=baseURL(),name=$('player-name').value.trim()||'Player';if(name.length>22)throw new Error('Keep your name to 22 characters or fewer.');const code=$('room-code').value.trim().toUpperCase();if(join&&!/^[A-Z2-9]{6}$/.test(code))throw new Error('Enter the six-character room code.');const connection={url};if(!await wakeServer(connection,generation))return;
+      const session=await globalThis.DotlandsRoom[join?'join':'create']({url,room:code,name,...peerCallbacks(generation)});
+      if(generation!==networkGeneration){session.close();return;}
+      peerSession=session;aiGeneration++;aiRunning=false;online={url,...session.credentials};room=null;state=null;shownWinner=false;rememberRoom();acceptSnapshot(session.initial);schedulePoll();}
     catch(e){if(generation===networkGeneration)$('online-status').textContent=e.message;}finally{if(generation===networkGeneration){busy=false;$('create-room').disabled=$('join-room').disabled=false;}}
   }
   function renderLobby() {
     $('lobby-code').textContent=room.code;
     $('lobby-seats').innerHTML=Array.from({length:room.maxPlayers},(_,i)=>{const p=room.players.find(p=>p.seat===i);return `<div class="lobby-seat"><span>${SYMBOLS[i]} &nbsp; ${p?esc(p.name):'Open seat'}</span><span>${p?(i===online.seat?'You':i===0?'Host':'Ready'):'Computer if empty'}</span></div>`;}).join('');
     $('start-room').hidden=online.seat!==room.hostSeat;
-    $('lobby-status').textContent=online.seat===room.hostSeat?'Everyone here? Start when ready. Empty seats become computer countries.':'Waiting for the host to start. This screen updates automatically.';
+    $('lobby-status').textContent=online.seat===room.hostSeat?'Keep this game open while friends play. Empty seats become computers.':'Waiting for the host to start. Keep both games open.';
   }
   async function startRoom() {
     if(busy||!online)return;const connection=online;busy=true;$('start-room').disabled=true;
@@ -242,7 +267,7 @@
   }
   async function reconnect() {
     const saved=readStorage(ROOM_KEY);if(!saved||busy)return;const generation=++networkGeneration;online=saved;room=null;state=null;shownWinner=false;busy=true;aiGeneration++;aiRunning=false;
-    try{if(!await wakeServer(saved,generation))return;const data=await api('/rooms/'+saved.code,undefined,saved);if(generation!==networkGeneration||online!==saved)return;acceptSnapshot(data);schedulePoll();}catch(e){if(generation===networkGeneration){$('online-status').textContent=e.message;toast(e.message);online=null;}}finally{if(generation===networkGeneration){busy=false;if(state)renderControls();}}
+    try{if(!await wakeServer(saved,generation))return;const session=await globalThis.DotlandsRoom.reconnect({...saved,...peerCallbacks(generation)});if(generation!==networkGeneration||online!==saved){session.close();return;}peerSession=session;online={url:saved.url,...session.credentials};rememberRoom();acceptSnapshot(session.initial);schedulePoll();}catch(e){if(generation===networkGeneration){$('online-status').textContent=e.message;toast(e.message);online=null;}}finally{if(generation===networkGeneration){busy=false;if(state)renderControls();}}
   }
   async function copyInvite() {
     const invite=new URL(online.url+'/');invite.searchParams.set('room',online.code);
@@ -261,7 +286,7 @@
   document.querySelectorAll('[data-mode]').forEach(b=>b.onclick=()=>switchMode(b.dataset.mode));
   $('country-count').onchange=updateHumans;$('start').onclick=startLocal;$('help').onclick=showHelp;$('home').onclick=menu;$('menu').onclick=menu;
   $('sound').onclick=()=>{soundOn=!soundOn;$('sound-line').hidden=soundOn;$('sound').setAttribute('aria-label',soundOn?'Turn sound off':'Turn sound on');playTone();};
-  $('continue').onclick=()=>{const saved=validSave();if(!saved){toast('No saved game was found.');return;}networkGeneration++;online=null;room=null;stopPolling();state=saved;selected=target=null;shownWinner=false;busy=false;showScreen('game');render();if(state.winner===null){if(current().controller==='ai')runAI();else if(state.players.filter(p=>p.controller==='human').length>1)handoff();}};
+  $('continue').onclick=()=>{const saved=validSave();if(!saved){toast('No saved game was found.');return;}networkGeneration++;closePeer();online=null;room=null;stopPolling();state=saved;selected=target=null;shownWinner=false;busy=false;showScreen('game');render();if(state.winner===null){if(current().controller==='ai')runAI();else if(state.players.filter(p=>p.controller==='human').length>1)handoff();}};
   $('create-room').onclick=()=>enterRoom(false);$('join-room').onclick=()=>enterRoom(true);$('start-room').onclick=startRoom;$('copy-room').onclick=copyInvite;$('leave-lobby').onclick=menu;$('reconnect').onclick=reconnect;
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&online&&!$('welcome').hidden)return;if(!document.hidden&&online)schedulePoll(50);else if(!online)save();});
   window.addEventListener('pagehide',save);

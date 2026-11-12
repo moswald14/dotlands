@@ -5,6 +5,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { createDoodletickService } = require('./doodletick-server.cjs');
 
 const COLORS = ['#78aa8b', '#dc917d', '#d5b45d', '#afa1c7'];
 const BOT_NAMES = ['Moss', 'Ember', 'Honey', 'Iris'];
@@ -18,6 +19,7 @@ function createServer(options = {}) {
   const creationTraffic = new Map();
   const now = options.now || Date.now;
   const maxRooms = options.maxRooms || 200;
+  const doodletick = createDoodletickService({ now, ...options.doodletick });
   const configuredOrigins = options.allowedOrigins !== undefined
     ? options.allowedOrigins
     : (process.env.ALLOWED_ORIGINS || '*');
@@ -159,8 +161,9 @@ function createServer(options = {}) {
       try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { problem(400, 'Invalid address.'); }
 
       if (req.method === 'GET' && (pathname === '/api' || pathname === '/api/health')) {
-        send(res, 200, { ok: true, game: 'Dotlands', protocol: 1 }); return;
+        send(res, 200, { ok: true, game: 'Dotlands', protocol: 1, doodletick: 1 }); return;
       }
+      if (await doodletick.handle(req, res)) return;
       // Known seats have independent request budgets, including behind hosting
       // proxies that expose one IP for every visitor. Invalid tokens still use
       // the IP budget; arbitrary forwarded headers are never trusted.
