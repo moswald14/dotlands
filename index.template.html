@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#edf1e9">
+  <meta name="description" content="A new continent every game. A simple hex strategy game for one to four players, with solo AI and private online rooms.">
+  <title>Dotlands — A new continent every game.</title>
+  <style>/* STYLE */</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <button id="home" class="brand" aria-label="Dotlands menu"><svg viewBox="0 0 32 36" aria-hidden="true"><path d="M16 1 31 9.5v17L16 35 1 26.5v-17Z" fill="currentColor"/><g fill="#edf1e9"><circle cx="11" cy="13" r="2.5"/><circle cx="21" cy="13" r="2.5"/><circle cx="11" cy="23" r="2.5"/><circle cx="21" cy="23" r="2.5"/></g></svg>DOTLANDS<span class="brand-edition">FIELD NOTES № 01</span></button>
+    <div class="header-actions"><button id="sound" class="icon-button" aria-label="Turn sound on" title="Sound">♪<span id="sound-line">／</span></button><button id="help" class="icon-button" aria-label="How to play">?</button></div>
+  </header>
+  <main id="game" hidden>
+    <div class="game-top"><span class="eyebrow" id="round-label">ROUND 01</span><span id="turn-label" class="turn-pill">Moss's turn</span><button id="menu" class="text-button">Menu</button></div>
+    <div id="standings" class="standings" aria-label="Country standings"></div>
+    <section class="board-wrap" aria-label="Game map">
+      <div class="map-coordinate">THE LITTLE CONTINENT</div><div class="compass" aria-hidden="true">N<br>↑</div>
+      <svg id="board" role="group" aria-label="Hex map. Select your tile, then a neighboring tile."></svg>
+      <div class="map-footer"><span><i class="neutral-dot"></i> Independent land</span><span id="map-seed"></span></div>
+    </section>
+    <div id="event-log" class="event-log" role="status" aria-live="polite">Every great country starts small.</div>
+    <section id="controls" class="controls" aria-label="Turn controls"></section>
+  </main>
+  <main id="welcome" class="welcome">
+    <section class="intro"><div class="eyebrow">A LITTLE GAME OF CONQUEST</div><h1>Small armies.<br><span>Big borders.</span></h1><p>A new continent every game.<br>Take it one hex at a time.</p><div id="hero-map" class="hero-map" aria-hidden="true"></div><div class="intro-bottom"><span>01—04 PLAYERS</span><span>NO DICE. JUST DECISIONS.</span></div></section>
+    <section class="setup"><div class="section-heading"><span class="eyebrow">CHOOSE YOUR COMPANY</span><span class="little-star">✳</span></div>
+      <div class="mode-tabs" role="tablist" aria-label="Game mode"><button data-mode="solo" role="tab" aria-selected="true">Solo <small>vs. computers</small></button><button data-mode="local" role="tab" aria-selected="false">Pass & play <small>one screen</small></button><button data-mode="online" role="tab" aria-selected="false">Online <small>private rooms</small></button></div>
+      <div id="local-setup"><label class="field-label" for="country-count">COUNTRIES</label><select id="country-count"><option value="2">2 countries</option><option value="3">3 countries</option><option value="4" selected>4 countries</option></select><div id="human-field" hidden><label class="field-label" for="human-count">PEOPLE SHARING THIS SCREEN</label><select id="human-count"><option value="2" selected>2 people + computers</option><option value="3">3 people + computer</option><option value="4">4 people</option></select></div><div class="setup-note" id="mode-note">A new continent. You against the computers.</div><button id="start" class="primary full">Take on the world <span>↗</span></button></div>
+      <div id="online-setup" hidden><label class="field-label" for="player-name">YOUR NAME</label><input id="player-name" maxlength="24" autocomplete="nickname" placeholder="A tiny conqueror" value=""><details id="server-details"><summary>Game server connection</summary><label class="field-label" for="server-url">SERVER ADDRESS</label><input id="server-url" type="url" placeholder="https://your-game-server.example"><p class="fine-print">Use the server address from your host. A deployed server is needed for online rooms.</p></details><div class="online-buttons"><button id="create-room" class="primary">Create a room ↗</button><label class="sr-only" for="room-code">Room code</label><input id="room-code" maxlength="6" autocapitalize="characters" placeholder="CODE" aria-label="Six-character room code"><button id="join-room" class="secondary">Join</button></div><p id="online-status" class="setup-note" role="status">A private table for up to four people. Share the code with friends.</p><button id="reconnect" class="text-button" hidden>Return to your online room →</button></div>
+      <button id="continue" class="secondary full" hidden>Continue local game →</button><div class="rules-preview"><div><strong>01</strong><span>Keep one dot<br>on every hex.</span></div><div><strong>02</strong><span>Both armies lose.<br>The difference stays.</span></div><div><strong>03</strong><span>Grow your country.<br>Outlast the others.</span></div></div>
+    </section>
+  </main>
+  <main id="lobby" class="lobby" hidden><div class="eyebrow">YOUR PRIVATE TABLE</div><h1>Room for<br><span>conquest.</span></h1><p>Share this code and your server address with your friends.</p><button id="copy-room" class="room-code" title="Copy invitation"><span id="lobby-code"></span> <small>Copy invite ↗</small></button><div id="lobby-seats"></div><p id="lobby-status" class="setup-note" role="status"></p><button id="start-room" class="primary full">Start game · fill empty seats with AI ↗</button><button id="leave-lobby" class="text-button">Back to menu</button></main>
+  <footer class="site-footer"><span>THINK SMALL. CONQUER BIG.</span><span>HEX STRATEGY / v1.1</span></footer>
+</div>
+<dialog id="modal" aria-labelledby="modal-title"><div id="modal-content"></div></dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+<script>/* ENGINE */</script>
+<script>/* APP */</script>
+</body>
+</html>
