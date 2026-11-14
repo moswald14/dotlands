@@ -129,7 +129,7 @@ function createDoodletickService(options = {}) {
           pruneEvents(peer);
           if (after < peer.droppedThrough) fail(410, 'The connection fell too far behind. Reconnect to refresh the game.');
           send(res, 200, { room: room.code, game: room.game, hostId: room.hostId,
-            peers: [...room.members.values()].map(m => ({ peerId: m.peerId, connected: !m.left && now() - m.lastSeen <= 30000 })),
+            peers: [...room.members.values()].map(m => ({ peerId: m.peerId, connected: !m.left && now() - m.lastSeen <= 120000 })),
             events: peer.events.filter(item => item.event.seq > after).map(item => item.event), cursor: room.sequence });
           return true;
         }

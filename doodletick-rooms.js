@@ -37,14 +37,49 @@
     if (role === 'guest' && !/^[A-Z2-9]{6}$/.test(roomInput)) throw new Error('Enter a six-character room code.');
     let room = roomInput, hostId = null, token = config.token || null;
     let cursor = Number.isSafeInteger(config.cursor) && config.cursor >= 0 ? config.cursor : 0;
-    let closed = false, timer = null, pollBusy = false, requestNumber = 0, lastStatus = null;
+    let closed = false, timer = null, pollBusy = false, requestNumber = 0, lastStatus = null, statusKey = '';
+    let lastActivity = Date.now(), nextPollAt = 0, failures = 0, wakeRequested = false, resumeRequested = false, ackTimer = null;
     const stream = randomId(crypto), peers = new Map(), links = new Map(), outgoing = new Map(), incoming = new Map(), waitingIce = new Map();
-    const requests = new Set();
-    const interval = Math.max(10, Number(config.pollIntervalMs) || 1200);
+    const requests = new Set(), acknowledgements = new Map();
+    const interval = Math.max(10, Number(config.pollIntervalMs) || 5000);
+    const idleInterval = Math.max(interval, Number(config.idleIntervalMs) || 15000);
+    const hiddenInterval = Math.max(idleInterval, Number(config.hiddenIntervalMs) || 30000);
+    const idleAfter = Math.max(interval, Number(config.idleAfterMs) || 30000);
     const requestTimeout = Math.max(100, Number(config.requestTimeoutMs) || 20000);
-    const retryAfter = Math.max(10, Number(config.retryAfterMs) || 2500);
+    const retryAfter = Math.max(10, Number(config.retryAfterMs) || hiddenInterval * 2 + interval);
     const on = (name, value, other) => { if (typeof config[name] === 'function') config[name](value, other); };
-    function status(state, extra) { if (!closed || state === 'closed') { lastStatus = state; on('onStatus', { state, ...(extra || {}) }); } }
+    function status(state, extra) {
+      if (closed && state !== 'closed') return;
+      const value = { state, ...(extra || {}) }, key = JSON.stringify([state, value.transport, value.reason, value.code]);
+      lastStatus = state;
+      if (key !== statusKey) { statusKey = key; on('onStatus', value); }
+    }
+    const offline = () => root.navigator?.onLine === false;
+    function cadence() {
+      if (root.document?.hidden) return hiddenInterval;
+      if (failures) return Math.min(hiddenInterval, interval * Math.pow(2, Math.min(failures - 1, 4)));
+      return Date.now() - lastActivity >= idleAfter ? idleInterval : interval;
+    }
+    function schedule(delay = cadence()) {
+      clearTimeout(timer); timer = null;
+      if (!closed && !offline()) { nextPollAt = Date.now() + delay; timer = setTimeout(poll, delay); }
+    }
+    function activity() {
+      lastActivity = Date.now();
+      if (!pollBusy && nextPollAt > lastActivity + interval) schedule(interval);
+    }
+    function wake() {
+      if (closed || offline()) return;
+      activity(); failures = 0;
+      if (pollBusy) wakeRequested = true; else schedule(0);
+    }
+    function resume() { resumeRequested = true; wake(); }
+    function visibility() { if (!root.document?.hidden) resume(); else if (!pollBusy) schedule(); }
+    function wentOffline() {
+      clearTimeout(timer); timer = null;
+      for (const abort of requests) abort.abort();
+      status('disconnected', { reason: 'You are offline. Reconnecting when the network returns.' });
+    }
     function route(suffix) { return '/doodletick/rooms/' + room + suffix; }
     async function request(path, body, auth, signal) {
       if (closed) throw coded('The room is closed.', 'closed');
@@ -55,7 +90,7 @@
         const response = await fetcher(url + path, {
           method: body === undefined ? 'GET' : 'POST',
           headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(auth ? { Authorization: 'Bearer ' + token } : {}) },
-          body: body === undefined ? undefined : JSON.stringify(body), signal: abort.signal,
+          body: body === undefined ? undefined : JSON.stringify(body), signal: abort.signal, cache: 'no-store', credentials: 'omit',
         });
         let data; try { data = await response.json(); } catch (_) { throw coded('The game server did not reply. Try again.', 'network'); }
         if (!response.ok) throw coded(data.error || 'The room could not complete that request.', response.status);
@@ -98,7 +133,13 @@
       if (peers.get(id)) status('connected', { peerId: id, transport: transportMode() });
     }
     function acknowledge(id, remoteStream, seq) {
-      sendFrame(id, { v: 1, type: 'ack', stream: remoteStream, seq }, false).catch(() => {});
+      const key = id + ':' + remoteStream, previous = acknowledgements.get(key);
+      if (!previous || previous.frame.seq < seq) acknowledgements.set(key, { id, frame: { v: 1, type: 'ack', stream: remoteStream, seq } });
+      if (ackTimer === null) ackTimer = setTimeout(() => {
+        ackTimer = null;
+        const batch = Array.from(acknowledgements.values()); acknowledgements.clear();
+        if (!closed) for (const ack of batch) sendFrame(ack.id, ack.frame, false).catch(() => {});
+      }, 0);
     }
     function receive(id, frame) {
       if (closed || !allowed(id) || !frame || frame.v !== 1 || !validPeer(frame.stream) || !Number.isSafeInteger(frame.seq) || frame.seq < 1) return;
@@ -109,6 +150,7 @@
         return;
       }
       if (frame.type !== 'message' || !Object.prototype.hasOwnProperty.call(frame, 'payload')) return;
+      activity();
       const sender = stateFor(id);
       const knownStreams = incoming.get(id);
       if (sender.remoteEpoch !== frame.stream && knownStreams && knownStreams.has(frame.stream)) {
@@ -223,14 +265,18 @@
       for (const [id, sent] of outgoing) {
         if (!peers.get(id)) continue;
         for (const entry of sent.pending.values()) {
-          if (Date.now() - entry.last < retryAfter || entry.busy) continue;
+          // A delivered mailbox frame already has a durable replay copy. Give
+          // background peers time to collect and acknowledge it before retrying.
+          const delay = entry.path === 'direct' ? interval * 2 + 2000 : retryAfter * Math.pow(2, Math.min(entry.retries, 2));
+          if (Date.now() - entry.last < (config.retryAfterMs ? retryAfter : delay) || entry.busy) continue;
           entry.busy = true; entry.last = Date.now();
-          try { await sendFrame(id, entry.frame, true); } finally { entry.busy = false; }
+          try { entry.path = await sendFrame(id, entry.frame, true); entry.retries++; } finally { entry.busy = false; }
         }
       }
     }
     async function poll() {
-      if (closed || pollBusy) return;
+      if (closed || pollBusy || offline()) return;
+      clearTimeout(timer); timer = null;
       pollBusy = true;
       try {
         const view = await request(route('/events?after=' + cursor), undefined, true);
@@ -242,6 +288,7 @@
           seen.add(peer.peerId);
           const connected = peer.connected === true;
           if (peers.get(peer.peerId) !== connected) {
+            activity();
             peers.set(peer.peerId, connected); on('onPeer', { peerId: peer.peerId, connected });
             if (connected) announcePath(peer.peerId); else disposeLink(peer.peerId);
           }
@@ -256,25 +303,34 @@
         }
         cursor = view.cursor;
         await retryPending();
+        failures = 0;
         // A brief network failure may leave the peer roster unchanged. Restore
         // controls when polling recovers instead of waiting for someone to send
         // a move; guests still need a live host before they can resume.
         if (lastStatus === 'disconnected' && (role === 'host' || peers.get(hostId))) status('connected', { transport: transportMode() });
         if (!peers.size && role === 'host') status('connected', { transport: 'relay' });
+        if (resumeRequested) { resumeRequested = false; on('onResume'); }
       } catch (error) {
         if (!closed) {
-          status(error.code === 410 || error.code === 401 || error.code === 404 ? 'error' : 'disconnected', { reason: error.message, code: error.code });
+          failures++;
+          if ([410, 401, 404].includes(error.code)) status('error', { reason: error.message, code: error.code });
+          else if (transportMode() === 'direct') status('connected', { transport: 'direct' });
+          else status('disconnected', { reason: error.message, code: error.code });
           if ([410, 401, 404].includes(error.code)) { await stop(false); return; }
         }
       } finally {
         pollBusy = false;
-        if (!closed) timer = setTimeout(poll, interval);
+        schedule(wakeRequested ? 0 : cadence()); wakeRequested = false;
       }
     }
     async function stop(notifyServer) {
       if (closed) return;
       closed = true;
       clearTimeout(timer);
+      clearTimeout(ackTimer); acknowledgements.clear();
+      root.document?.removeEventListener?.('visibilitychange', visibility);
+      root.removeEventListener?.('online', resume);
+      root.removeEventListener?.('offline', wentOffline);
       for (const abort of requests) abort.abort();
       for (const id of links.keys()) disposeLink(id);
       for (const [id, connected] of peers) if (connected) on('onPeer', { peerId: id, connected: false });
@@ -291,22 +347,27 @@
       get credentials() { return { url, game, room, peerId, hostId, token, cursor }; },
       async send(id, payload) {
         if (closed) throw coded('The room is closed.', 'closed');
+        if (offline()) throw coded('You are offline. Try again when the network returns.', 'network');
         if (!allowed(id) || !peers.get(id)) throw coded('That player is reconnecting. Try again shortly.', 'peer');
         const sent = stateFor(id), frame = { v: 1, type: 'message', stream: sent.stream, seq: sent.next, payload };
         const text = encode(frame), bytes = byteLength(text);
         if (sent.pending.size >= MAX_PENDING || sent.bytes + bytes > MAX_BUFFER) throw coded('The connection is busy. Wait for it to catch up.', 'backpressure');
         // Copy once so a caller cannot mutate a message while it awaits a relay retry.
-        const entry = { frame: JSON.parse(text), bytes, last: Date.now(), busy: true };
+        activity();
+        const entry = { frame: JSON.parse(text), bytes, last: Date.now(), busy: true, path: 'relay', retries: 0 };
         sent.pending.set(sent.next++, entry); sent.bytes += bytes;
-        try { await sendFrame(id, entry.frame, false); status('connected', { peerId: id, transport: transportMode() }); }
+        try { entry.path = await sendFrame(id, entry.frame, false); status('connected', { peerId: id, transport: transportMode() }); }
         finally { entry.busy = false; }
       },
       async broadcast(payload) {
         const ids = Array.from(peers).filter(([, connected]) => connected).map(([id]) => id);
         await Promise.all(ids.map(id => handle.send(id, payload)));
       },
-      close() { return stop(true); },
+      wake, close() { return stop(true); },
     };
+    root.document?.addEventListener?.('visibilitychange', visibility);
+    root.addEventListener?.('online', resume);
+    root.addEventListener?.('offline', wentOffline);
     status('connecting');
     try {
       const joined = role === 'host'

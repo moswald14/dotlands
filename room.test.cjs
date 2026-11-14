@@ -154,3 +154,42 @@ test('A closed adapter rejects pending requests and never silently resumes a hos
   transportAPI.peers.get('host').opts.onMessage = original;
   await assert.rejects(guest.snapshot(), /closed/);
 });
+
+test('A guest action sends one resulting board per player and never applies duplicate revisions twice', async t => {
+  const { host, guest, transportAPI } = await sessions(t);
+  const updates = { host: [], guest: [] };
+  transportAPI.peers.get('host').opts.onStatus({ state: 'connected' });
+  // Observe the public callbacks through an independent third seat as well.
+  const third = await R.join({ engine: E, transportAPI, url: 'https://rooms.example', room: host.credentials.room, name: 'Third', onSnapshot: s => updates.guest.push(s) });
+  t.after(() => third.close());
+  let board = await host.start({ expectedRevision: (await host.snapshot()).revision, fillBots: false });
+  board = await host.action({ type: 'endTurn', expectedRevision: board.revision }); await tick();
+  transportAPI.packets.length = 0; updates.guest.length = 0;
+  await guest.action({ type: 'endTurn', expectedRevision: board.revision }); await tick();
+  const outbound = transportAPI.packets.filter(p => p.from === 'host' && p.packet.data?.state);
+  assert.equal(outbound.length, 2, 'one response to the actor, one push to the spectator');
+  assert.equal(outbound.filter(p => p.to === guest.credentials.peerId).length, 1);
+  assert.equal(updates.guest.length, 1);
+  const pushed = outbound.find(p => p.to === third.credentials.peerId);
+  transportAPI.inject('host', third.credentials.peerId, pushed.packet);
+  assert.equal(updates.guest.length, 1, 'the same revision never redraws twice');
+});
+
+test('Unchanged refreshes are compact, concurrent refreshes coalesce, and resume fetches missing state', async t => {
+  const { host, guest, transportAPI } = await sessions(t);
+  let board = await host.start({ expectedRevision: (await host.snapshot()).revision, fillBots: false }); await tick();
+  transportAPI.packets.length = 0;
+  const first = guest.snapshot(), second = guest.snapshot(); assert.equal(first, second);
+  assert.deepEqual((await first).state, board.state); await tick();
+  assert.equal(transportAPI.packets.length, 2, 'one request and one response');
+  const reply = transportAPI.packets[1].packet.data;
+  assert.equal(reply.unchanged, true); assert.equal(reply.state, undefined);
+  assert.ok(JSON.stringify(reply).length < 100);
+  const opts = transportAPI.peers.get(guest.credentials.peerId).opts, receive = opts.onMessage;
+  opts.onMessage = () => {};
+  board = await host.action({ type: 'endTurn', expectedRevision: board.revision }); await tick();
+  opts.onMessage = receive; opts.onResume(); await tick();
+  const lastResponse = transportAPI.packets.findLast(p => p.packet.kind === 'response');
+  assert.deepEqual(lastResponse.packet.data.state, board.state, 'resume asks for an authoritative board when behind');
+  assert.deepEqual((await guest.snapshot()).state, board.state);
+});

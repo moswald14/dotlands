@@ -171,3 +171,18 @@ test('closing a host stops transport and surfaces room closure to guests', async
   await until(() => f.statuses.some(s => s.state === 'error' && s.code === 410));
   await assert.rejects(f.guest.send(f.host.peerId, {}), /closed/);
 });
+
+test('a healthy direct game continues when the connection-assist server cannot be reached', async t => {
+  let outage = false;
+  const f = await setup(t, { forceRelay: false, RTCPeerConnection: FakeRTC, fetch: (url, options) => {
+    if (outage && url.includes('/events?')) return Promise.reject(new TypeError('Assist server unavailable'));
+    return fetch(url, options);
+  } });
+  await until(() => [f.hostStatuses, f.guestStatuses].every(list => list.at(-1)?.transport === 'direct'));
+  outage = true; await delay(150);
+  await f.guest.send(f.host.peerId, { directDuringOutage: true });
+  await until(() => f.hostMessages.length === 1);
+  assert.equal(f.hostMessages[0].payload.directDuringOutage, true);
+  assert.ok([f.hostStatuses, f.guestStatuses].every(list => list.at(-1)?.state === 'connected'));
+  outage = false;
+});

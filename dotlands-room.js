@@ -123,7 +123,9 @@
         return this.snapshot(member, true);
       }
       const member = this.authenticate(peerId, token);
-      if (operation === 'snapshot') return this.snapshot(member);
+      if (operation === 'snapshot') return body.knownRevision === this.revision
+        ? { unchanged: true, code: this.code, seat: member.seat, revision: this.revision }
+        : this.snapshot(member);
       if (operation === 'start') {
         if (member.seat !== 0) fail(403, 'Only the host can start the game.');
         if (this.state) fail(409, 'This game has already started.');
@@ -161,12 +163,28 @@
     const name = nameOf(config.name || 'Player');
     let handle, authority, botTimer = null, closed = false, ready = false, current = null, seat, gameToken = config.token;
     const pending = new Map(), cache = new Map(), traffic = new Map(), queued = [];
-    const onStatus = status => { if (!closed) config.onStatus?.(status); };
+    let lostConnection = false, syncPromise = null, refresh = null;
+    const onStatus = status => {
+      if (closed) return;
+      if (status.state === 'disconnected') lostConnection = true;
+      if (status.state === 'connected' && lostConnection) {
+        lostConnection = false;
+        if (ready) refresh?.().catch(() => {});
+      }
+      config.onStatus?.(status);
+    };
     const update = data => {
+      if (data?.unchanged === true) {
+        if (!current || data.code !== handle.room || data.seat !== seat || !Number.isSafeInteger(data.revision) || data.revision < 1 || data.revision > current.revision) fail(400, 'The host sent an invalid refresh.');
+        return false;
+      }
       validateSnapshot(data, engine, { code: handle.room, ...(seat === undefined ? {} : { seat }) });
       if (current && data.revision < current.revision) return false;
       const clean = clone(data); delete clean.token;
-      if (current && data.revision === current.revision && JSON.stringify(clean) !== JSON.stringify(current)) fail(400, 'The host sent conflicting updates.');
+      if (current && data.revision === current.revision) {
+        if (JSON.stringify(clean) !== JSON.stringify(current)) fail(400, 'The host sent conflicting updates.');
+        return false;
+      }
       current = clean; seat = data.seat;
       if (ready) config.onSnapshot?.(clone(clean));
       return true;
@@ -174,10 +192,10 @@
     // A single guest disappearing must not freeze the host or the other guests.
     // The transport reports an overall connection loss separately.
     const deliver = (peerId, value) => Promise.resolve(handle.send(peerId, value)).catch(error => onStatus({ state: 'peer-waiting', peerId, reason: 'A guest is reconnecting. ' + error.message }));
-    const broadcast = () => {
+    const broadcast = (excludePeer = null) => {
       if (closed || !authority) return;
       update(authority.snapshot(authority.members[0]));
-      for (const member of authority.members.slice(1)) if (member.connected) deliver(member.peerId, { protocol: PROTOCOL, kind: 'snapshot', data: authority.snapshot(member) });
+      for (const member of authority.members.slice(1)) if (member.connected && member.peerId !== excludePeer) deliver(member.peerId, { protocol: PROTOCOL, kind: 'snapshot', data: authority.snapshot(member) });
       if (!botTimer && authority.state?.winner === null && authority.state.players[authority.state.currentPlayer].controller === 'ai') {
         botTimer = setTimeout(() => {
           botTimer = null;
@@ -204,7 +222,10 @@
           changed = before !== authority.revision;
         } catch (e) { response = { protocol: PROTOCOL, kind: 'response', id: packet.id, ok: false, status: e.status || 500, error: e.status ? e.message : 'The host could not complete that action.' }; }
         cache.set(key, response); if (cache.size > 512) cache.delete(cache.keys().next().value);
-        deliver(peerId, response).then(() => { if (changed) broadcast(); });
+        // The response already carries this player's new board. Other players
+        // receive the push immediately; a slow guest must not delay their turn.
+        deliver(peerId, response);
+        if (changed) broadcast(peerId);
       } else {
         if (peerId !== handle.hostId) return;
         if (packet.kind === 'response') {
@@ -229,7 +250,8 @@
       else if (role === 'guest' && event.peerId === handle.hostId) onStatus({ state: event.connected ? 'connected' : 'disconnected', reason: event.connected ? '' : 'The host is disconnected. Keep this page open to reconnect.' });
     };
     const transportOptions = { ...(config.transport || {}), url: config.url || config.transport?.url,
-      room: config.room || config.code || config.transport?.room, onMessage: receive, onPeer: peerChange, onStatus };
+      room: config.room || config.code || config.transport?.room, onMessage: receive, onPeer: peerChange, onStatus,
+      onResume: () => { if (ready) refresh?.().catch(() => {}); } };
     try { handle = await transport[role === 'host' ? 'create' : 'join'](transportOptions); }
     catch (error) { throw networkError(error); }
     if (!handle || typeof handle.room !== 'string' || !handle.peerId || !handle.hostId || typeof handle.send !== 'function') { handle?.close?.(); fail(503, 'The room connection is incomplete.'); }
@@ -246,10 +268,16 @@
       if (pending.size >= 8) return Promise.reject(new Error('Wait for your previous request to finish.'));
       const id = randomToken(16);
       return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { pending.delete(id); reject(new Error('The host did not answer. Reconnect to refresh the table before trying again.')); }, config.requestTimeout || 15000);
+        const timer = setTimeout(() => { pending.delete(id); reject(new Error('The host did not answer. Reconnect to refresh the table before trying again.')); }, config.requestTimeout || 75000);
         pending.set(id, { resolve, reject, timer, operation });
         Promise.resolve(handle.send(handle.hostId, { protocol: PROTOCOL, kind: 'request', id, operation, body, ...(gameToken ? { token: gameToken } : {}) })).catch(e => { const item = pending.get(id); if (item) { clearTimeout(item.timer); pending.delete(id); item.reject(networkError(e)); } });
       });
+    };
+    refresh = () => {
+      if (!syncPromise) {
+        syncPromise = rpc('snapshot', current ? { knownRevision: current.revision } : {}).finally(() => { syncPromise = null; });
+      }
+      return syncPromise;
     };
     const close = () => { if (closed) return; closed = true; clearTimeout(botTimer); for (const p of pending.values()) { clearTimeout(p.timer); p.reject(new Error('This room connection is closed.')); } pending.clear(); cache.clear(); traffic.clear(); handle.close(); };
     for (const [peerId, packet] of queued.splice(0)) receive(peerId, packet);
@@ -258,16 +286,17 @@
     }
     ready = true;
     const session = {
+      eventDriven: true,
       initial: clone(current),
       get credentials() { return { kind: 'p2p', role, url: handle.credentials?.url || config.url, room: handle.room, code: handle.room, peerId: handle.peerId, hostId: handle.hostId, seat, token: gameToken, name, transport: clone(handle.credentials || {}) }; },
       request(path, body) {
         const base = '/rooms/' + handle.room;
-        if (path === base && body === undefined) return rpc('snapshot');
+        if (path === base && body === undefined) return refresh();
         if (path === base + '/start') return rpc('start', body);
         if (path === base + '/action') return rpc('action', body);
         return Promise.reject(new Error('Unknown room request.'));
       },
-      snapshot: () => rpc('snapshot'), start: body => rpc('start', body), action: body => rpc('action', body), close,
+      snapshot: refresh, start: body => rpc('start', body), action: body => rpc('action', body), close,
     };
     return session;
   }

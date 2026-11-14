@@ -70,6 +70,8 @@ test('Doodletick rejects spoofed identities, cross-room tokens, malformed messag
 test('Doodletick heartbeat and guest resume preserve identity while host leave closes the room', async t => {
   const { api, room, advance } = await fixture(t); const { host, guest, path } = await room();
   advance(31000);
+  assert.equal((await api(path + '/events', undefined, host.token)).peers.every(p => p.connected), true, 'Background checks must not mark an idle guest offline');
+  advance(90000);
   const roster = await api(path + '/events?after=0', undefined, host.token);
   assert.equal(roster.peers.find(p => p.peerId === guest.peerId).connected, false);
   assert.equal(roster.peers.find(p => p.peerId === host.peerId).connected, true);

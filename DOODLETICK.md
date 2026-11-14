@@ -23,6 +23,18 @@ Messages and replay buffers are bounded. Tokens never appear in invitations. Gam
 
 ## Network and privacy
 
+### Traffic and idle behavior (1.4.0)
+
+The transport checks its mailbox every 5 seconds during activity, every 15 seconds after 30 quiet seconds, and every 30 seconds while the page is hidden. Browser-reported offline status pauses checks. Returning to the page or regaining connectivity checks immediately and asks the host for a conditional refresh. Browsers may suspend background tabs longer; the host must remain open and able to run. Presence allows 120 seconds between heartbeats.
+
+Direct moves send immediately through the existing WebRTC channel. The channel stays open while idle, so browsers may still exchange their own connection keepalives. Assisted moves are queued immediately and collected at the recipient's next check: normally up to 5 seconds while active, or longer while idle/backgrounded. A full assisted request/response takes two checks. Game requests allow 75 seconds for that round trip.
+
+Dotlands pushes changed boards rather than downloading an unchanged board on a timer. A guest action receives one result; other guests each receive one push. Equal revisions do not redraw the game. Concurrent refreshes share one request, and an unchanged refresh returns only the room, seat, and revision. Every mutation still checks authentication, turn, and expected revision.
+
+Acknowledgements are cumulative and coalesced per received batch. Direct messages without an acknowledgement can retry through the mailbox after 12 seconds; accepted mailbox messages wait at least 65 seconds before retrying, then back off. Retry payloads retain the same stream and sequence so duplicates cannot apply twice. Mailbox outages back off to 30-second checks, and an established healthy direct path continues playing. Only one mailbox read runs at a time; closing removes timers and event listeners.
+
+`netcode.test.cjs` exercises scheduling under virtual time. Comparing the production 1.3.0 and 1.4.0 transports after warmup gives 50 versus 4 mailbox reads per quiet minute (92% fewer), or 2 per hidden minute. This excludes browser keepalives, connection setup, and the removed application snapshot loop; it is not a measured total-bandwidth or battery claim.
+
 WebRTC uses browser encryption and public STUN at `stun:stun.cloudflare.com:3478` to discover a usable connection. Peers can learn each other's network addresses as part of direct connection setup. The connection server sees setup metadata, room membership, and game messages when assisted transport is used. The HTTPS fallback is not described as end-to-end encrypted. No camera or microphone permissions are requested.
 
 The service runs on one free Render instance at https://dotlands-rooms.onrender.com . It can sleep after inactivity and take about a minute to wake. Mailboxes are temporary and expire after 24 idle hours or a server restart. Game state stays in the host browser. Paid hosting or accounts are not required for players.

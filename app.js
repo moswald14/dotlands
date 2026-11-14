@@ -246,11 +246,11 @@
     if(data.phase==='lobby'){showScreen('lobby');renderLobby();return;}
     if(changed||$('game').hidden){state=data.state;selected=target=null;showScreen('game');render();if(oldTurn!==state.turn)log(`${current().name}’s turn. ${current().controller==='ai'?'Computer is playing.':'The table is up to date.'}`);}
   }
-  function schedulePoll(ms=1700) {stopPolling();if(online)polling=setTimeout(pollRoom,ms);}
+  function schedulePoll(ms=5000) {stopPolling();if(online&&!peerSession?.eventDriven)polling=setTimeout(pollRoom,ms);}
   async function pollRoom() {
     if(!online)return; const connection=online;
     if(busy){schedulePoll();return;}
-    try {const data=await api('/rooms/'+connection.code,undefined,connection);if(online!==connection)return;acceptSnapshot(data);if(!state||state.winner===null)schedulePoll(document.hidden?5000:1700);}
+    try {const data=await api('/rooms/'+connection.code,undefined,connection);if(online!==connection)return;acceptSnapshot(data);if(!state||state.winner===null)schedulePoll(document.hidden?30000:5000);}
     catch(e){if(online!==connection)return;if(e.status===401||e.status===404){stopPolling();toast(e.message);$('lobby-status').textContent=e.message;log(e.message);return;}$('lobby-status').textContent='Connection interrupted. Trying again…';log('Connection interrupted. Reconnecting to your room…');schedulePoll(4000);}
   }
   async function enterRoom(join) {

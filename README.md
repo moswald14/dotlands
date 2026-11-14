@@ -38,6 +38,7 @@ Ending a turn adds one dot to every held hex, capped at nine. Neutral tiles do n
 | `engine.test.mjs` | Rules, invariants, seeded maps, and complete AI simulations. |
 | `client.test.cjs` | Room navigation, reconnect races, and interrupted computer turns. |
 | `solo-head-start.test.cjs` | Solo bonuses, limits, mode isolation, and saved-game continuation. |
+| `netcode.test.cjs` | Five-second checks, idle/offline scheduling, batched acknowledgements, and retry timing. |
 | `server.cjs` | Serves the game, Doodletick routes, and the legacy room API. |
 | `doodletick-server.cjs` | Reusable signaling mailbox and assisted transport; no game rules. |
 | `doodletick-rooms.js` | Reusable WebRTC data connections with assisted fallback. |
@@ -76,7 +77,9 @@ The HTTP tests use temporary local ports. Network restrictions can block those c
 
 ## Release
 
-Version 1.3.0 adds the solo head start and fixes online recovery: temporary hosting loading pages are retried
+Version 1.4.0 reduces network traffic: five-second active checks, slower idle/background checks, offline pause, event-driven board updates, compact refreshes, batched acknowledgements, and bounded retry backoff. Healthy direct games continue through temporary mailbox outages. See `DOODLETICK.md` for timing and recovery limits.
+
+Version 1.3.0 added the solo head start and fixed online recovery: temporary hosting loading pages are retried
 before room creation, and a recovered room connection unlocks play even when
 the same players are still present. The initial connection can wait up to two
 minutes for a sleeping host. Room creation itself is never automatically repeated.

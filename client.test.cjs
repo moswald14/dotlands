@@ -28,7 +28,7 @@ function harness(options={}) {
   async function sessionStub(config,join=false,resume=false) {
     const response=await context.fetch(config.url+'/api/rooms'+(join||resume?'/'+(config.room||config.code)+(resume?'':'/join'):''),{method:resume?'GET':'POST'});
     const data=await response.json();
-    const session={initial:data,credentials:{url:config.url,code:data.code,seat:data.seat,token:data.token,role:join||resume?'guest':'host'},closed:false,config,
+    const session={eventDriven:true,initial:data,credentials:{url:config.url,code:data.code,seat:data.seat,token:data.token,role:join||resume?'guest':'host'},closed:false,config,
       async request(route,body){const response=await context.fetch(config.url+'/api'+route,{method:body===undefined?'GET':'POST'});return response.json();},close(){this.closed=true;}};
     sessions.push(session);return session;
   }
@@ -50,6 +50,18 @@ function harness(options={}) {
   };
   return {client:context.clientTest,el,respond,respondLoadingPage,connection,lobby,storage,timers,fireTimer,flush,wake,requests,copied,sessions,legacyAttempts,clipboardAttempts,attached,selectionRanges,document:context.document};
 }
+
+test('An event-driven peer room does not schedule repeated board requests',async()=>{
+  const h=harness();h.client.menu();h.el('server-url').value=h.connection.url;
+  const opening=h.client.enterRoom(false);await h.wake();h.respond({...h.lobby,token:'new-token'});await opening;
+  assert.equal(h.sessions[0].eventDriven,true);
+  assert.equal(h.timers.size,0,'The transport owns connection checks; the app must not add snapshot polling');
+  const board=E.createGame({seed:'pushes'});
+  h.sessions[0].config.onSnapshot({...h.lobby,revision:2,phase:'playing',state:board});
+  assert.equal(h.client.getSession().state.seed,board.seed);
+  assert.equal(h.timers.size,0);
+  h.client.menu();
+});
 test('Leaving an online room keeps the menu open when an earlier poll finishes',async()=>{
   const h=harness();const request=h.client.pollRoom();
   h.client.menu();
