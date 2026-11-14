@@ -6,18 +6,21 @@ const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
 const E=require('./engine.js');
-function harness() {
-  const elements=new Map(),timers=new Map(),storage=new Map(),requests=[],copied=[],sessions=[];let timerId=0,pending=[];
+function harness(options={}) {
+  const elements=new Map(),timers=new Map(),storage=new Map(),requests=[],copied=[],sessions=[],legacyAttempts=[],clipboardAttempts=[],attached=new Set(),selectionRanges=[];let timerId=0,pending=[],created=0;
   function el(id) {
-    if(!elements.has(id))elements.set(id,{id,hidden:['game','lobby'].includes(id),open:false,value:id==='country-count'?'4':id==='human-count'?'2':'',dataset:{},attributes:{},style:{setProperty(){}},setAttribute(name,value){this.attributes[name]=value;},addEventListener(){},showModal(){this.open=true;},close(){this.open=false;},focus(){},select(){},innerHTML:'',textContent:'',isConnected:true});
+    if(!elements.has(id))elements.set(id,{id,hidden:['game','lobby'].includes(id),open:false,value:id==='country-count'?'4':id==='human-count'?'2':'',dataset:{},attributes:{},style:{setProperty(){}},setAttribute(name,value){this.attributes[name]=value;},addEventListener(){},showModal(){this.open=true;},close(){this.open=false;},focus(){context.document.activeElement=this;},select(){this.selectionStart=0;this.selectionEnd=this.value.length;},setSelectionRange(start,end,direction){this.selectionStart=start;this.selectionEnd=end;this.selectionDirection=direction;},remove(){attached.delete(this);},innerHTML:'',textContent:'',isConnected:true});
     return elements.get(id);
   }
   const modes=['solo','local','online'].map(mode=>({dataset:{mode},setAttribute(){}}));
   const context={
     DotlandsEngine:E,URL,URLSearchParams,AbortController,console,
     location:new URL('https://example.itch.io/game'),
-    document:{getElementById:el,querySelectorAll:()=>modes,addEventListener(){},activeElement:null,hidden:false},
-    window:{addEventListener(){}},navigator:{clipboard:{writeText:async text=>{copied.push(text);}}},
+    document:{getElementById:el,querySelectorAll:()=>modes,addEventListener(){},activeElement:null,hidden:false,
+      createElement:tag=>el(tag+'-temporary-'+(++created)),body:{appendChild(element){attached.add(element);}},
+      getSelection:()=>({get rangeCount(){return selectionRanges.length;},getRangeAt:i=>selectionRanges[i],removeAllRanges(){selectionRanges.length=0;},addRange(range){selectionRanges.push(range);}}),
+      execCommand(command){legacyAttempts.push({command,text:context.document.activeElement?.value});if(options.legacyCopy){if(options.legacyCopy!=='optimistic')copied.push(context.document.activeElement.value);return true;}return false;}},
+    window:{addEventListener(){}},navigator:{clipboard:options.clipboard==='missing'?undefined:{writeText:async text=>{clipboardAttempts.push(text);if(options.clipboard==='denied')throw new Error('Clipboard permission denied');copied.push(text);}}},
     localStorage:{getItem:key=>storage.get(key)||null,setItem:(key,value)=>storage.set(key,value)},
     setTimeout:(fn,ms)=>{timers.set(++timerId,{fn,ms});return timerId;},clearTimeout:id=>timers.delete(id),
     fetch:(...args)=>{requests.push(args);return new Promise(resolve=>pending.push({args,resolve}));}
@@ -38,13 +41,14 @@ function harness() {
   context.clientTest.setSession({online:connection,room:lobby,state:null});
   context.clientTest.acceptSnapshot(lobby);
   const respond=(data,status=200)=>{assert.ok(pending.length,'Expected a pending request');pending.shift().resolve({ok:status<400,status,json:async()=>data});};
+  const respondLoadingPage=()=>{assert.ok(pending.length,'Expected a pending request');pending.shift().resolve({ok:true,status:200,json:async()=>{throw new SyntaxError('Unexpected token <');}});};
   const flush=async()=>{for(let i=0;i<8;i++)await Promise.resolve();};
   const wake=async()=>{respond({ok:true,game:'Dotlands',protocol:1,doodletick:1});await flush();};
   const fireTimer=async(ms)=>{
     const entry=[...timers].find(([,timer])=>timer.ms===ms);assert.ok(entry,`Expected a ${ms} ms timer`);
     timers.delete(entry[0]);entry[1].fn();await flush();
   };
-  return {client:context.clientTest,el,respond,connection,lobby,storage,timers,fireTimer,flush,wake,requests,copied,sessions};
+  return {client:context.clientTest,el,respond,respondLoadingPage,connection,lobby,storage,timers,fireTimer,flush,wake,requests,copied,sessions,legacyAttempts,clipboardAttempts,attached,selectionRanges,document:context.document};
 }
 test('Leaving an online room keeps the menu open when an earlier poll finishes',async()=>{
   const h=harness();const request=h.client.pollRoom();
@@ -170,6 +174,17 @@ test('Leaving while the server wakes cancels joining without sending a room requ
   assert.equal(h.requests.length,1);assert.equal(h.client.getSession().online,null);assert.equal(h.el('welcome').hidden,false);
 });
 
+test('A hosting loading page is retried before creating one room',async()=>{
+  const h=harness();h.client.menu();h.el('server-url').value=h.connection.url;
+  const request=h.client.enterRoom(false);h.respondLoadingPage();await h.flush();
+  assert.match(h.el('online-status').textContent,/Waking/);
+  assert.equal(h.el('create-room').disabled,true);
+  await h.fireTimer(2500);await h.wake();
+  h.respond({...h.lobby,token:'new-token'});await request;
+  assert.deepEqual(h.requests.map(([,options])=>options.method),['GET','GET','POST']);
+  assert.equal(h.client.getSession().online.code,h.lobby.code);
+});
+
 test('An unknown server fails without repeated requests',async()=>{
   const h=harness();h.client.menu();h.el('server-url').value=h.connection.url;
   const request=h.client.enterRoom(false);h.respond({ok:true,game:'Different game',protocol:1});await request;
@@ -178,8 +193,59 @@ test('An unknown server fails without repeated requests',async()=>{
 
 test('Room invitations open the standalone hosted game and never share a seat token',async()=>{
   const h=harness();await h.client.copyInvite();
-  assert.match(h.copied[0],/https:\/\/server\.example\/\?room=ABC234/);
+  assert.equal(h.copied[0],'https://server.example/?room=ABC234');
   assert.doesNotMatch(h.copied[0],/itch\.io|test-token|token=/);
+});
+
+test('The room-code button copies only the six-character code',async()=>{
+  const h=harness();await h.el('copy-room').onclick();
+  assert.deepEqual(h.copied,['ABC234']);
+  assert.match(h.el('toast').textContent,/Room code copied/);
+});
+
+test('Synchronous copying works when the Clipboard API is missing or denied',async()=>{
+  for(const clipboard of ['missing','denied']){
+    const h=harness({clipboard,legacyCopy:true});
+    const request=h.el('copy-room').onclick();
+    assert.deepEqual(h.copied,['ABC234'],'selection-based copy must run during the tap, before awaiting permissions');
+    await request;
+    assert.equal(h.clipboardAttempts.length,clipboard==='missing'?0:1);
+    assert.equal(h.attached.size,0);
+    assert.equal(h.el('modal').open,false);
+    assert.match(h.el('toast').textContent,/Room code copied/);
+  }
+});
+
+test('Clipboard copying restores the previous focus and selections',async()=>{
+  const h=harness({legacyCopy:true}),field=h.el('player-name');field.value='Little conqueror';field.focus();field.setSelectionRange(2,8,'backward');
+  const range={cloneRange(){return this;}};h.selectionRanges.push(range);
+  await h.client.copyInvite();
+  assert.equal(h.legacyAttempts.length,1);assert.equal(h.clipboardAttempts.length,1);assert.ok(h.copied.every(text=>text==='https://server.example/?room=ABC234'));
+  assert.equal(h.document.activeElement,field);
+  assert.equal(field.selectionStart,2);assert.equal(field.selectionEnd,8);assert.equal(field.selectionDirection,'backward');
+  assert.deepEqual(h.selectionRanges,[range]);assert.equal(h.attached.size,0);
+});
+
+test('A positive legacy result still attempts the modern clipboard write during the tap',async()=>{
+  const h=harness({legacyCopy:'optimistic'});
+  const request=h.el('copy-room').onclick();
+  assert.deepEqual(h.clipboardAttempts,['ABC234'],'modern write starts before awaiting a permission result');
+  await request;
+  assert.deepEqual(h.copied,['ABC234'],'a legacy success report alone must not skip the working modern path');
+  assert.match(h.el('toast').textContent,/Room code copied/);
+});
+
+test('Blocked automatic copying offers selectable code and link without claiming success',async()=>{
+  for(const clipboard of ['missing','denied']){
+    const h=harness({clipboard});await h.el('copy-room').onclick();
+    assert.equal(h.copied.length,0);assert.equal(h.el('modal').open,true);
+    assert.match(h.el('modal-content').innerHTML,/Automatic copy is unavailable/);
+    assert.equal(h.el('manual-room-code').value,'ABC234');
+    assert.equal(h.el('invite-link').value,'https://server.example/?room=ABC234');
+    assert.equal(h.el('manual-room-code').selectionEnd,6);
+    assert.doesNotMatch(h.el('toast').textContent,/copied/i);
+    assert.equal(h.attached.size,0);
+  }
 });
 
 test('An invalid peer snapshot cannot replace a valid board or room',()=>{

@@ -42,7 +42,7 @@
   }
   function switchMode(next) {
     mode=next; for(const b of document.querySelectorAll('[data-mode]'))b.setAttribute('aria-selected',String(b.dataset.mode===mode));
-    $('local-setup').hidden=mode==='online'; $('online-setup').hidden=mode!=='online'; $('human-field').hidden=mode==='solo';
+    $('local-setup').hidden=mode==='online'; $('online-setup').hidden=mode!=='online'; $('human-field').hidden=mode==='solo';$('head-start-field').hidden=mode!=='solo';
     $('mode-note').textContent=mode==='solo'?'A new continent. You against the computers.':'Take a turn, pass the phone. Computers fill spare seats.';
     $('start').innerHTML=mode==='solo'?'Take on the world <span>↗</span>':'Let’s make borders <span>↗</span>';
     if(mode==='online' && !$('server-url').value)$('server-details').open=true;
@@ -57,7 +57,10 @@
     const count=+$('country-count').value, humanCount=mode==='solo'?1:+$('human-count').value;
     const seed=globalThis.crypto?.getRandomValues?crypto.getRandomValues(new Uint32Array(1))[0].toString(36):Date.now().toString(36);
     state=E.createGame({seed,radius:3,players:Array.from({length:count},(_,i)=>({name:NAMES[i],color:COLORS[i],controller:i<humanCount?'human':'ai'}))});
-    showScreen('game'); render(); save(); log('Select one of your colored hexes to begin.');
+    const requestedHeadStart=+$('head-start').value;
+    const headStart=mode==='solo'&&[1,2].includes(requestedHeadStart)?requestedHeadStart:0;
+    if(headStart)for(const tile of state.tiles)if(tile.owner===0){tile.units=Math.min(9,tile.units+headStart);tile.ready=tile.units-1;}
+    showScreen('game'); render(); save(); log(headStart?`Head start: +${headStart} dot${headStart===1?'':'s'} on each of your starting hexes. Your move.`:'Select one of your colored hexes to begin.');
     if(humanCount>1)handoff();
   }
   function current() { return state.players[state.currentPlayer]; }
@@ -193,11 +196,22 @@
     if(peerSession && connection===online && path!=='/health')return peerSession.request(path,body);
     const base=connection?.url||baseURL(),headers={};if(body!==undefined)headers['Content-Type']='application/json';if(connection?.token)headers.Authorization='Bearer '+connection.token;
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),timeout);
-    try {const response=await fetch(base+'/api'+path,{method:body===undefined?'GET':'POST',headers,body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal,cache:'no-store',credentials:'omit'});if([502,503,504].includes(response.status)){const e=new Error('The room server is waking up. Please try again shortly.');e.retryable=true;throw e;}let data;try{data=await response.json();}catch{throw new Error('That address is not a Dotlands game server.');}if(!response.ok){const e=new Error(data.error||'The room could not update.');e.status=response.status;throw e;}return data;}
+    try {
+      const response=await fetch(base+'/api'+path,{method:body===undefined?'GET':'POST',headers,body:body===undefined?undefined:JSON.stringify(body),signal:controller.signal,cache:'no-store',credentials:'omit'});
+      if([502,503,504].includes(response.status)){const e=new Error('The room server is waking up. Please try again shortly.');e.retryable=true;throw e;}
+      let data;
+      try{data=await response.json();}catch{
+        // Free hosts may answer a health read with an HTML loading page before
+        // the application starts. Retry only this safe read, never a room POST.
+        const e=new Error(path==='/health'&&response.ok?'The room server is still starting. Please try again shortly.':'That address is not a Dotlands game server.');
+        e.retryable=path==='/health'&&response.ok;throw e;
+      }
+      if(!response.ok){const e=new Error(data.error||'The room could not update.');e.status=response.status;throw e;}return data;
+    }
     catch(e){if(e.name==='AbortError'||e instanceof TypeError){const failure=new Error(e.name==='AbortError'?'The server took too long. It may be waking up; try again.':'Could not connect. Check the server address and your connection.');failure.retryable=true;throw failure;}throw e;}finally{clearTimeout(timer);}
   }
   async function wakeServer(connection,generation) {
-    const deadline=Date.now()+75000;let failure;
+    const deadline=Date.now()+120000;let failure;
     $('online-status').textContent='Connecting… The room server may take a minute to wake.';
     while(generation===networkGeneration&&Date.now()<deadline){
       try{const health=await api('/health',undefined,connection,Math.min(15000,deadline-Date.now()));if(generation!==networkGeneration)return false;if(!health?.ok||health.game!=='Dotlands'||health.protocol!==1||health.doodletick!==1)throw new Error('That address is not a Dotlands game server.');return true;}
@@ -269,12 +283,47 @@
     const saved=readStorage(ROOM_KEY);if(!saved||busy)return;const generation=++networkGeneration;online=saved;room=null;state=null;shownWinner=false;busy=true;aiGeneration++;aiRunning=false;
     try{if(!await wakeServer(saved,generation))return;const session=await globalThis.DotlandsRoom.reconnect({...saved,...peerCallbacks(generation)});if(generation!==networkGeneration||online!==saved){session.close();return;}peerSession=session;online={url:saved.url,...session.credentials};rememberRoom();acceptSnapshot(session.initial);schedulePoll();}catch(e){if(generation===networkGeneration){$('online-status').textContent=e.message;toast(e.message);online=null;}}finally{if(generation===networkGeneration){busy=false;if(state)renderControls();}}
   }
-  async function copyInvite() {
-    const invite=new URL(online.url+'/');invite.searchParams.set('room',online.code);
-    const text=`Join my Dotlands room: ${online.code}\n${invite.href}`;
-    try {await navigator.clipboard.writeText(text);toast('Invitation copied. Send it to your friends.');}
-    catch {openModal(`<div class="eyebrow">INVITE YOUR FRIENDS</div><h2>Room ${esc(online.code)}</h2><p>Share this link:</p><input id="invite-link" readonly value="${esc(invite.href)}"><button id="close-invite" class="primary full">Done</button>`);$('invite-link').select();$('close-invite').onclick=closeModal;}
+  function copySelection(text) {
+    const focused=document.activeElement,selection=document.getSelection?.(),ranges=[];
+    const start=focused?.selectionStart,end=focused?.selectionEnd,direction=focused?.selectionDirection;
+    let field;
+    try {
+      for(let i=0;i<(selection?.rangeCount||0);i++)ranges.push(selection.getRangeAt(i).cloneRange());
+      field=document.createElement('textarea');field.value=text;field.readOnly=true;
+      field.style.cssText='position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0;font-size:16px;';
+      document.body.appendChild(field);field.focus({preventScroll:true});field.select();field.setSelectionRange(0,text.length);
+      return document.execCommand?.('copy')===true;
+    } catch {return false;}
+    finally {
+      field?.remove();
+      try {
+        focused?.focus({preventScroll:true});selection?.removeAllRanges();
+        for(const range of ranges)selection.addRange(range);
+        if(typeof start==='number'&&typeof end==='number')focused.setSelectionRange(start,end,direction);
+      } catch { /* Copying still works if the old selection has left the page. */ }
+    }
   }
+  async function copyRoomDetails(kind) {
+    const connection=online;if(!connection)return;
+    const invite=new URL(connection.url+'/');invite.searchParams.set('room',connection.code);
+    const text=kind==='code'?connection.code:invite.href;
+    // Start both available paths inside the original tap. A legacy command can
+    // report success without updating a background browser's clipboard, while
+    // waiting for an iframe permission denial can consume the fallback gesture.
+    let modernCopy=null;
+    try{if(navigator.clipboard?.writeText)modernCopy=Promise.resolve(navigator.clipboard.writeText(text)).then(()=>true,()=>false);}catch{}
+    const selectionCopied=copySelection(text);
+    const copied=(modernCopy?await modernCopy:false)||selectionCopied;
+    if(online!==connection)return;
+    if(copied){toast(kind==='code'?'Room code copied. Send it to your friends.':'Invitation link copied. Send it to your friends.');return;}
+    openModal(`<div class="eyebrow">INVITE YOUR FRIENDS</div><h2>Room ${esc(connection.code)}</h2><p>Automatic copy is unavailable in this browser. Touch and hold a field, then choose Copy. On a computer, select a field and press Ctrl+C or ⌘C.</p><label class="field-label" for="manual-room-code">ROOM CODE</label><input id="manual-room-code" readonly><label class="field-label" for="invite-link">INVITATION LINK</label><input id="invite-link" readonly><button id="close-invite" class="primary full">Done</button>`);
+    $('manual-room-code').value=connection.code;$('invite-link').value=invite.href;
+    for(const id of ['manual-room-code','invite-link'])$(id).onclick=()=>{$(id).focus({preventScroll:true});$(id).select();};
+    const chosen=$(kind==='code'?'manual-room-code':'invite-link');chosen.focus({preventScroll:true});chosen.select();
+    $('close-invite').onclick=closeModal;
+  }
+  function copyInvite() {return copyRoomDetails('invite');}
+  function copyRoomCode() {return copyRoomDetails('code');}
   function hero() {
     const saved=state;state=E.createGame({seed:'hello',players:NAMES.map((name,i)=>({name,color:COLORS[i]}))});
     const demo=state.tiles.filter(t=>Math.max(Math.abs(t.q),Math.abs(t.r),Math.abs(t.q+t.r))<=2).map(t=>({...t,owner:t.q<0?0:t.r>0?1:t.r<0?2:-1,units:1+((t.q*7+t.r*3+30)%6),ready:9}));
@@ -287,7 +336,7 @@
   $('country-count').onchange=updateHumans;$('start').onclick=startLocal;$('help').onclick=showHelp;$('home').onclick=menu;$('menu').onclick=menu;
   $('sound').onclick=()=>{soundOn=!soundOn;$('sound-line').hidden=soundOn;$('sound').setAttribute('aria-label',soundOn?'Turn sound off':'Turn sound on');playTone();};
   $('continue').onclick=()=>{const saved=validSave();if(!saved){toast('No saved game was found.');return;}networkGeneration++;closePeer();online=null;room=null;stopPolling();state=saved;selected=target=null;shownWinner=false;busy=false;showScreen('game');render();if(state.winner===null){if(current().controller==='ai')runAI();else if(state.players.filter(p=>p.controller==='human').length>1)handoff();}};
-  $('create-room').onclick=()=>enterRoom(false);$('join-room').onclick=()=>enterRoom(true);$('start-room').onclick=startRoom;$('copy-room').onclick=copyInvite;$('leave-lobby').onclick=menu;$('reconnect').onclick=reconnect;
+  $('create-room').onclick=()=>enterRoom(false);$('join-room').onclick=()=>enterRoom(true);$('start-room').onclick=startRoom;$('copy-room').onclick=copyRoomCode;$('copy-invite').onclick=copyInvite;$('leave-lobby').onclick=menu;$('reconnect').onclick=reconnect;
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&online&&!$('welcome').hidden)return;if(!document.hidden&&online)schedulePoll(50);else if(!online)save();});
   window.addEventListener('pagehide',save);
   const params=new URLSearchParams(location.search),stored=readStorage(ROOM_KEY);

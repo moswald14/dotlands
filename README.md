@@ -10,6 +10,12 @@ Source repository: [moswald14/dotlands](https://github.com/moswald14/dotlands).
 - **Pass & play:** two to four people share one screen, with computers in spare seats.
 - **Online:** a host creates a four-seat private room, friends join by invitation or code, and empty seats become computers at the start.
 
+Solo offers **Your head start**: none, one extra dot on each of your starting
+hexes (the default), or two extra dots per starting hex. The bonus is applied
+once to your country when a new solo game starts, with the nine-dot tile limit
+still enforced. Computer countries, turn growth, pass-and-play, and online
+matches keep their normal rules. Continuing a saved game does not add it again.
+
 Solo and shared-screen games run entirely in the single HTML file. Private online rooms use Doodletick: the host browser runs the game, browsers exchange moves over WebRTC, and the included Node.js service provides room discovery and an HTTPS fallback when a direct connection is unavailable. The published client can include its hosted address, so friends only need a room invitation or code. See `SERVER.md` to deploy your own server.
 
 ## Rules
@@ -31,6 +37,7 @@ Ending a turn adds one dot to every held hex, capped at nine. Neutral tiles do n
 | `build.mjs` | Produces a self-contained `index.html` and checks its embedded JavaScript syntax. |
 | `engine.test.mjs` | Rules, invariants, seeded maps, and complete AI simulations. |
 | `client.test.cjs` | Room navigation, reconnect races, and interrupted computer turns. |
+| `solo-head-start.test.cjs` | Solo bonuses, limits, mode isolation, and saved-game continuation. |
 | `server.cjs` | Serves the game, Doodletick routes, and the legacy room API. |
 | `doodletick-server.cjs` | Reusable signaling mailbox and assisted transport; no game rules. |
 | `doodletick-rooms.js` | Reusable WebRTC data connections with assisted fallback. |
@@ -69,6 +76,11 @@ The HTTP tests use temporary local ports. Network restrictions can block those c
 
 ## Release
 
+Version 1.3.0 adds the solo head start and fixes online recovery: temporary hosting loading pages are retried
+before room creation, and a recovered room connection unlocks play even when
+the same players are still present. The initial connection can wait up to two
+minutes for a sleeping host. Room creation itself is never automatically repeated.
+
 Zip the generated `index.html` at the archive root as `dotlands-itch.zip`. On itch.io choose HTML Game, upload the archive, and use fullscreen launch. Check the uploaded game on target phones before enabling Mobile Friendly. The official [HTML5 upload guide](https://itch.io/docs/creators/html5) describes the current embed options.
 
 Deploy the complete source folder as one Node.js service with HTTPS. The included Render configuration uses the free plan, builds with `node build.mjs .`, starts with `node server.cjs`, and checks `/api/health`. Keep the template, styles, app, engine, and build script together. Itch.io hosts the HTML client; it does not run the room server.
@@ -87,7 +99,7 @@ One local match is saved in browser storage when available. Starting a new local
 
 A free Render server sleeps after inactivity and may take about a minute to wake. Wait, then retry if your first connection times out. A restart, redeploy, or shutdown clears the room directory; create a new room if reconnection fails. See [Render's free-service limits](https://render.com/docs/free).
 
-Country names, symbols, and colors identify players. New games generate a connected continent with a random coastline and 33–39 land hexes. All countries begin with three connected hexes and 13 dots. A stored seed reproduces the same map; existing local saves retain their original map. The engine also supports a larger 48–54-hex variant.
+Country names, symbols, and colors identify players. New games generate a connected continent with a random coastline and 33–39 land hexes. Countries normally begin with three connected hexes and 13 dots; the solo head start adds three or six dots to the human country. A stored seed reproduces the same map; existing local saves retain their original map. The engine also supports a larger 48–54-hex variant.
 
 Live connection service and standalone game: https://dotlands-rooms.onrender.com
 

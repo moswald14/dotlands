@@ -37,14 +37,14 @@
     if (role === 'guest' && !/^[A-Z2-9]{6}$/.test(roomInput)) throw new Error('Enter a six-character room code.');
     let room = roomInput, hostId = null, token = config.token || null;
     let cursor = Number.isSafeInteger(config.cursor) && config.cursor >= 0 ? config.cursor : 0;
-    let closed = false, timer = null, pollBusy = false, requestNumber = 0;
+    let closed = false, timer = null, pollBusy = false, requestNumber = 0, lastStatus = null;
     const stream = randomId(crypto), peers = new Map(), links = new Map(), outgoing = new Map(), incoming = new Map(), waitingIce = new Map();
     const requests = new Set();
     const interval = Math.max(10, Number(config.pollIntervalMs) || 1200);
     const requestTimeout = Math.max(100, Number(config.requestTimeoutMs) || 20000);
     const retryAfter = Math.max(10, Number(config.retryAfterMs) || 2500);
     const on = (name, value, other) => { if (typeof config[name] === 'function') config[name](value, other); };
-    function status(state, extra) { if (!closed || state === 'closed') on('onStatus', { state, ...(extra || {}) }); }
+    function status(state, extra) { if (!closed || state === 'closed') { lastStatus = state; on('onStatus', { state, ...(extra || {}) }); } }
     function route(suffix) { return '/doodletick/rooms/' + room + suffix; }
     async function request(path, body, auth, signal) {
       if (closed) throw coded('The room is closed.', 'closed');
@@ -256,6 +256,10 @@
         }
         cursor = view.cursor;
         await retryPending();
+        // A brief network failure may leave the peer roster unchanged. Restore
+        // controls when polling recovers instead of waiting for someone to send
+        // a move; guests still need a live host before they can resume.
+        if (lastStatus === 'disconnected' && (role === 'host' || peers.get(hostId))) status('connected', { transport: transportMode() });
         if (!peers.size && role === 'host') status('connected', { transport: 'relay' });
       } catch (error) {
         if (!closed) {

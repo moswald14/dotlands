@@ -20,14 +20,48 @@ async function setup(t, extra = {}) {
     server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
   });
   const config = { url: 'http://127.0.0.1:' + server.address().port, pollIntervalMs: 20, retryAfterMs: 100, forceRelay: true, ...extra };
-  const hostMessages = [], guestMessages = [], statuses = [], presences = [];
-  const host = await Rooms.create({ ...config, onMessage: (from, payload) => hostMessages.push({ from, payload }), onStatus: status => statuses.push(status), onPeer: peer => presences.push(peer) });
+  const hostMessages = [], guestMessages = [], statuses = [], hostStatuses = [], guestStatuses = [], presences = [];
+  const host = await Rooms.create({ ...config, onMessage: (from, payload) => hostMessages.push({ from, payload }), onStatus: status => { statuses.push(status); hostStatuses.push(status); }, onPeer: peer => presences.push(peer) });
   handles.push(host);
-  const guest = await Rooms.join({ ...config, room: host.room, onMessage: (from, payload) => guestMessages.push({ from, payload }), onStatus: status => statuses.push(status) });
+  const guest = await Rooms.join({ ...config, room: host.room, onMessage: (from, payload) => guestMessages.push({ from, payload }), onStatus: status => { statuses.push(status); guestStatuses.push(status); } });
   handles.push(guest);
   await until(() => presences.some(peer => peer.peerId === guest.peerId && peer.connected));
-  return { config, host, guest, handles, hostMessages, guestMessages, statuses, presences };
+  return { config, host, guest, handles, hostMessages, guestMessages, statuses, hostStatuses, guestStatuses, presences };
 }
+
+test('a temporary polling outage recovers without a presence change or game message', async t => {
+  let offline = false;
+  const f = await setup(t, { fetch: async (url, options) => {
+    if (offline && url.includes('/events?')) throw new TypeError('Temporary connection loss');
+    return fetch(url, options);
+  } });
+  offline = true;
+  await until(() => [f.hostStatuses, f.guestStatuses].every(list => list.at(-1)?.state === 'disconnected'));
+  offline = false;
+  await until(() => [f.hostStatuses, f.guestStatuses].every(list => list.at(-1)?.state === 'connected'), 'healthy polling must restore both connections');
+  assert.equal(f.presences.filter(p => p.peerId === f.guest.peerId && p.connected).length, 1, 'recovery does not require a new presence event');
+  assert.equal(f.hostMessages.length + f.guestMessages.length, 0, 'recovery does not require another game message');
+});
+
+test('recovered polling keeps a guest paused until the host returns', async t => {
+  let offline = false, hostHidden = false, hostId;
+  const f = await setup(t, { fetch: async (url, options) => {
+    if (offline && url.includes('/events?')) throw new TypeError('Temporary connection loss');
+    const response = await fetch(url, options);
+    if (!hostHidden || !url.includes('/events?') || !response.ok) return response;
+    const data = await response.json();
+    data.peers = data.peers.map(peer => peer.peerId === hostId ? { ...peer, connected: false } : peer);
+    return { ok: true, json: async () => data };
+  } });
+  hostId = f.host.peerId; offline = true;
+  await until(() => [f.hostStatuses, f.guestStatuses].every(list => list.at(-1)?.state === 'disconnected'));
+  hostHidden = true; offline = false;
+  await until(() => f.hostStatuses.at(-1)?.state === 'connected');
+  await delay(100);
+  assert.equal(f.guestStatuses.at(-1)?.state, 'disconnected', 'server recovery cannot stand in for a live host');
+  hostHidden = false;
+  await until(() => f.guestStatuses.at(-1)?.state === 'connected', 'host return unlocks the guest without a game message');
+});
 
 test('mailbox fallback carries bounded ordered game messages and only reports presence changes', async t => {
   const f = await setup(t);
