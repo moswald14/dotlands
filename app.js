@@ -8,6 +8,7 @@
   const NAMES = ['Moss','Ember','Honey','Iris'];
   const COLORS = ['#78aa8b','#dc917d','#d5b45d','#afa1c7'];
   const SAVE_KEY = 'dotlands.local.v1', ROOM_KEY = 'doodletick.dotlands.room.v1';
+  const KEEPER_KEY = 'dotlands.keeper.address.v1';
   const DEFAULT_SERVER = ''; // Set to your HTTPS room server before building the itch.io release.
   let state = null, mode = 'solo', selected = null, target = null;
   let online = null, room = null, polling = null, busy = false, aiRunning = false, aiGeneration = 0, networkGeneration = 0;
@@ -184,6 +185,32 @@
     openModal(`<div class="eyebrow">THE FIELD GUIDE</div><h2>Four little rules.</h2><div class="rule-row"><b>01</b><p><strong>Nine dots per hex. One stays.</strong><br>Every dot is a person. Keep at least one on each hex you own.</p></div><div class="rule-row"><b>02</b><p><strong>Tap yours, then a neighbor.</strong><br>Send the most dots possible. Friendly hexes fill up to nine. Each dot moves once per turn.</p></div><div class="rule-row"><b>03</b><p><strong>The bigger army survives.</strong><br>6 against 4 leaves 2. A tie clears the hex. Smaller attacks weaken defenders but lose their dots.</p></div><div class="rule-row"><b>04</b><p><strong>End your turn to grow.</strong><br>Each held hex gains one dot, up to nine. Be the last country standing.</p></div><p class="fine-print">Every new game has a new continent. Local games save in this browser when storage is available.</p><button id="close-help" class="primary full">Let’s play ↗</button>`);
     $('close-help').onclick=closeModal;
   }
+  function savedKeeperAddress(raw) {
+    let url;
+    try { url=new URL(raw.trim()); } catch { throw new Error('Enter the HTTPS address of your Keeper.'); }
+    const local=['localhost','127.0.0.1','[::1]'].includes(url.hostname);
+    if(url.protocol!=='https:'&&!(url.protocol==='http:'&&local))throw new Error('Use HTTPS for your Keeper address. Localhost can use HTTP.');
+    if(url.username||url.password||url.search)throw new Error('Use your Keeper’s plain address without sign-in details or a query string.');
+    // A Home Assistant Web UI path may carry a session credential. Never save
+    // that path in the public game's browser storage, even when URL-encoded.
+    let path=url.pathname;
+    try {
+      for(let depth=0;path.includes('%')&&depth<8;depth++)path=decodeURIComponent(path);
+      if(path.includes('%'))throw new Error();
+    } catch { throw new Error('Use your Keeper’s plain address without encoded session details.'); }
+    if(/(?:^|\/)(?:hassio(?:_ingress)?|ingress|sessions?)(?:[\/;]|$)/i.test(path.replace(/\\/g,'/')))throw new Error('Use Home Assistant’s normal address, then open the Keeper Web UI. Do not paste an ingress or session link.');
+    url.hash='dotlands';return url.href;
+  }
+  function openKeeper(event) {
+    try {
+      const url=savedKeeperAddress($('keeper-url').value);
+      $('open-keeper').href=url;
+      writeStorage(KEEPER_KEY,new URL(url).href.replace(/#dotlands$/, ''));
+      $('keeper-status').textContent='Opening your Keeper. Unlock the same vault there, then choose Dotlands.';
+    } catch(error) {
+      event.preventDefault();$('open-keeper').href='#';$('keeper-status').textContent=error.message;$('keeper-url').focus();
+    }
+  }
   function baseURL() {
     const raw=$('server-url').value.trim().replace(/\/+$/,'');
     if(!raw)throw new Error('Enter your host’s game server address first.');
@@ -336,10 +363,13 @@
   $('country-count').onchange=updateHumans;$('start').onclick=startLocal;$('help').onclick=showHelp;$('home').onclick=menu;$('menu').onclick=menu;
   $('sound').onclick=()=>{soundOn=!soundOn;$('sound-line').hidden=soundOn;$('sound').setAttribute('aria-label',soundOn?'Turn sound off':'Turn sound on');playTone();};
   $('continue').onclick=()=>{const saved=validSave();if(!saved){toast('No saved game was found.');return;}networkGeneration++;closePeer();online=null;room=null;stopPolling();state=saved;selected=target=null;shownWinner=false;busy=false;showScreen('game');render();if(state.winner===null){if(current().controller==='ai')runAI();else if(state.players.filter(p=>p.controller==='human').length>1)handoff();}};
+  $('open-keeper').onclick=openKeeper;
   $('create-room').onclick=()=>enterRoom(false);$('join-room').onclick=()=>enterRoom(true);$('start-room').onclick=startRoom;$('copy-room').onclick=copyRoomCode;$('copy-invite').onclick=copyInvite;$('leave-lobby').onclick=menu;$('reconnect').onclick=reconnect;
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&online&&!$('welcome').hidden)return;if(!document.hidden&&online)schedulePoll(50);else if(!online)save();});
   window.addEventListener('pagehide',save);
   const params=new URLSearchParams(location.search),stored=readStorage(ROOM_KEY);
+  $('keeper-url').value=readStorage(KEEPER_KEY)||'';
+  $('quick-room').open=params.has('room')||Boolean(stored);
   $('server-url').value=params.get('server')||DEFAULT_SERVER||stored?.url||(/^https?:$/.test(location.protocol)&&!/(?:itch\.io|hwcdn\.net|itch\.zone)$/.test(location.hostname)?location.origin:'');
   $('room-code').value=(params.get('room')||'').toUpperCase().slice(0,6);$('player-name').maxLength=22;
   $('continue').hidden=!validSave();$('reconnect').hidden=!stored;updateHumans();hero();switchMode(params.has('room')?'online':'solo');

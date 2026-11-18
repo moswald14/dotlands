@@ -34,7 +34,7 @@ function harness(options={}) {
   }
   context.DotlandsRoom={create:c=>sessionStub(c),join:c=>sessionStub(c,true),reconnect:c=>sessionStub(c,false,true)};
   vm.createContext(context);
-  const source=fs.readFileSync(path.join(__dirname,'app.js'),'utf8').replace(/\}\)\(\);\s*$/,`globalThis.clientTest={menu,pollRoom,startRoom,reconnect,enterRoom,startLocal,runAI,remoteAction,acceptSnapshot,pickTile,commit,render,copyInvite,myTurn,setSession(s){online=s.online;room=s.room;state=s.state;},getSession(){return {online,room,state,busy,aiRunning};}};})();`);
+  const source=fs.readFileSync(path.join(__dirname,'app.js'),'utf8').replace(/\}\)\(\);\s*$/,`globalThis.clientTest={menu,pollRoom,startRoom,reconnect,enterRoom,startLocal,runAI,remoteAction,acceptSnapshot,pickTile,commit,render,copyInvite,myTurn,savedKeeperAddress,openKeeper,setSession(s){online=s.online;room=s.room;state=s.state;},getSession(){return {online,room,state,busy,aiRunning};}};})();`);
   vm.runInContext(source,context,{filename:'app.js'});
   const connection={url:'https://server.example',code:'ABC234',seat:0,token:'test-token'};
   const lobby={code:'ABC234',revision:1,phase:'lobby',maxPlayers:4,hostSeat:0,seat:0,players:[{seat:0,name:'Moss'}]};
@@ -50,6 +50,40 @@ function harness(options={}) {
   };
   return {client:context.clientTest,el,respond,respondLoadingPage,connection,lobby,storage,timers,fireTimer,flush,wake,requests,copied,sessions,legacyAttempts,clipboardAttempts,attached,selectionRanges,document:context.document};
 }
+
+test('Saved room launcher opens only an explicit HTTPS Keeper or local development address',()=>{
+  const h=harness();
+  assert.equal(h.client.savedKeeperAddress('https://keeper.example/base/'), 'https://keeper.example/base/#dotlands');
+  assert.equal(h.client.savedKeeperAddress('http://localhost:8787'), 'http://localhost:8787/#dotlands');
+  for(const bad of ['javascript:alert(1)','data:text/html,test','http://keeper.example','https://user:password@keeper.example/','https://keeper.example/?token=secret','not an address']) assert.throws(()=>h.client.savedKeeperAddress(bad));
+  h.el('keeper-url').value='https://keeper.example/base/';let prevented=false;
+  h.client.openKeeper({preventDefault(){prevented=true;}});
+  assert.equal(prevented,false);assert.equal(h.el('open-keeper').href,'https://keeper.example/base/#dotlands');
+  assert.equal(JSON.parse(h.storage.get('dotlands.keeper.address.v1')),'https://keeper.example/base/');
+  assert.equal(h.requests.length,0,'The itch game must not request Keeper keys or charge an entry');
+  h.el('keeper-url').value='https://keeper.example/?token=secret';h.client.openKeeper({preventDefault(){prevented=true;}});
+  assert.equal(prevented,true);assert.equal(h.el('open-keeper').href,'#');
+  assert.equal(JSON.parse(h.storage.get('dotlands.keeper.address.v1')),'https://keeper.example/base/');
+});
+
+test('Saved room launcher never opens or stores Home Assistant ingress and session paths',()=>{
+  const h=harness(),key='dotlands.keeper.address.v1';
+  h.el('keeper-url').value='https://home.example/';h.client.openKeeper({preventDefault(){assert.fail('Normal address must remain usable');}});
+  const previous=h.storage.get(key);
+  for(const path of [
+    '/api/hassio_ingress/private-session/', '/hassio/ingress/addon/', '/ingress/private-session/', '/api/session/private-session/',
+    '/api/HaSsIo_InGrEsS/private-session/', '/api/%68assio_ingress/private-session/', '/api%2Fhassio_ingress%2Fprivate-session/',
+    '/api/%2568assio_ingress/private-session/', '/api/%2553ession/private-session/', '/api%5Chassio_ingress%5Cprivate-session/',
+    '/api/%E0%A4%A/', '/api/session;private-session/'
+  ]){
+    const address='https://home.example'+path;let prevented=false;
+    h.el('keeper-url').value=address;h.client.openKeeper({preventDefault(){prevented=true;}});
+    assert.equal(prevented,true,address);assert.equal(h.el('open-keeper').href,'#',address);
+    assert.equal(h.storage.get(key),previous,'Rejected paths must not replace the safe preference');
+    assert.throws(()=>h.client.savedKeeperAddress(address));
+  }
+  assert.equal(h.requests.length,0,'Rejected addresses must not cause network requests');
+});
 
 test('An event-driven peer room does not schedule repeated board requests',async()=>{
   const h=harness();h.client.menu();h.el('server-url').value=h.connection.url;

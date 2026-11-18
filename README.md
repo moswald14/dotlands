@@ -4,11 +4,14 @@ A small HTML5 hex strategy game for phones and desktops. Explore a newly generat
 
 Source repository: [moswald14/dotlands](https://github.com/moswald14/dotlands).
 
+The 1.5.0 saved-room launcher is a release candidate. Its persistent service is maintained in [Doodle Tick](https://github.com/moswald14/doodletick), documented in `keeper/DOTLANDS.md`. Keeper installation and the final two-browser/phone check are pending; the live itch.io game has not been replaced by this branch.
+
 ## Modes
 
 - **Solo:** one human country against one to three computer opponents.
 - **Pass & play:** two to four people share one screen, with computers in spare seats.
-- **Online:** a host creates a four-seat private room, friends join by invitation or code, and empty seats become computers at the start.
+- **Saved online rooms:** open your Doodleverse Keeper, unlock your usual vault, and create or return to a saved continent. Each human pays one private garden Doodle Coin per room, including the creator. Returning is free. Friends use the same Keeper and enter the room code.
+- **Quick online rooms:** a host creates a temporary four-seat room, friends join by invitation or code, and empty seats become computers at the start. The host must keep the game open.
 
 Solo offers **Your head start**: none, one extra dot on each of your starting
 hexes (the default), or two extra dots per starting hex. The bonus is applied
@@ -16,7 +19,9 @@ once to your country when a new solo game starts, with the nine-dot tile limit
 still enforced. Computer countries, turn growth, pass-and-play, and online
 matches keep their normal rules. Continuing a saved game does not add it again.
 
-Solo and shared-screen games run entirely in the single HTML file. Private online rooms use Doodletick: the host browser runs the game, browsers exchange moves over WebRTC, and the included Node.js service provides room discovery and an HTTPS fallback when a direct connection is unavailable. The published client can include its hosted address, so friends only need a room invitation or code. See `SERVER.md` to deploy your own server.
+Solo and shared-screen games run entirely in the single HTML file. Saved rooms use the authenticated room service in Doodleverse Keeper; this game only remembers your chosen Keeper address and opens it in another tab. The public game never receives a vault key or charges a garden balance. Use an HTTPS Keeper address (HTTP is allowed for localhost development).
+
+Quick rooms use Doodletick: the host browser runs the game, browsers exchange moves over WebRTC, and the included Node.js service provides room discovery and an HTTPS fallback when a direct connection is unavailable. The published client can include its hosted address, so friends only need a quick-room invitation or code. See `SERVER.md` to deploy the temporary-room server.
 
 ## Rules
 

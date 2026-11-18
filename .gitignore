@@ -1,0 +1,10 @@
+node_modules/
+index.html
+.env
+.env.*
+*.log
+*.vault.json
+witness-key.json
+garden-ledger.json
+dotlands-rooms.json
+dotlands-rooms.json.next
