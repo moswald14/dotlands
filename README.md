@@ -4,7 +4,7 @@ A small HTML5 hex strategy game for phones and desktops. Explore a newly generat
 
 Source repository: [moswald14/dotlands](https://github.com/moswald14/dotlands).
 
-The 1.5.0 saved-room launcher is a release candidate. Its persistent service is maintained in [Doodle Tick](https://github.com/moswald14/doodletick), documented in `keeper/DOTLANDS.md`. Keeper installation and the final two-browser/phone check are pending; the live itch.io game has not been replaced by this branch.
+Version 1.5.0 adds saved online rooms through **Doodleverse Keeper 0.18b or newer**. The persistent service is maintained in [Doodle Tick](https://github.com/moswald14/doodletick), documented in `keeper/DOTLANDS.md`.
 
 ## Modes
 
@@ -82,6 +82,8 @@ The HTTP tests use temporary local ports. Network restrictions can block those c
 
 ## Release
 
+Version 1.5.0 adds a saved-room launcher. Each human pays one existing private garden Doodle Coin per room; returning with the same vault is free. Keeper saves the board, seats and turn so every player can close the game. Two-browser tests covered paid entry, capture, turn changes, closing both browsers and restoring the identical board. The layout was checked at 390 × 844; this does not replace a physical-phone test.
+
 Version 1.4.0 reduces network traffic: five-second active checks, slower idle/background checks, offline pause, event-driven board updates, compact refreshes, batched acknowledgements, and bounded retry backoff. Healthy direct games continue through temporary mailbox outages. See `DOODLETICK.md` for timing and recovery limits.
 
 Version 1.3.0 added the solo head start and fixed online recovery: temporary hosting loading pages are retried
@@ -103,7 +105,11 @@ You can also set the `DOTLANDS_SERVER` environment variable. Replace the example
 
 ## Persistence and limits
 
-One local match is saved in browser storage when available. Starting a new local match replaces it. Online seat credentials are saved separately; reconnecting requires that same browser storage and a still-existing room. The host must keep its game open. Closing or reloading the host ends the match; guests can return to the same seat while the host remains open. Connection mailboxes expire after 24 idle hours or a server restart. There is no host migration. Run one connection server instance.
+One local match is saved in browser storage when available. Starting a new local match replaces it.
+
+**Saved rooms:** use the same Keeper address and unlock the same vault to return. Rooms survive browser closure and Keeper restarts. Keeper must be running when someone plays. Keep a backup of Keeper's data and your encrypted vault; the public itch.io game does not store either. Saved rooms use five-second revision checks while active and pause checks when hidden or offline. Existing temporary rooms are not converted into saved rooms.
+
+**Quick rooms:** seat credentials are saved separately in browser storage. The host must keep its game open. Closing or reloading the host ends the match; guests can return to the same seat while the host remains open. Connection mailboxes expire after 24 idle hours or a server restart. There is no host migration. Run one connection server instance.
 
 A free Render server sleeps after inactivity and may take about a minute to wake. Wait, then retry if your first connection times out. A restart, redeploy, or shutdown clears the room directory; create a new room if reconnection fails. See [Render's free-service limits](https://render.com/docs/free).
 
@@ -111,4 +117,4 @@ Country names, symbols, and colors identify players. New games generate a connec
 
 Live connection service and standalone game: https://dotlands-rooms.onrender.com
 
-Doodletick does not require players to create an account. This game module does not access the Keeper identity vault or file library. See `DOODLETICK.md`.
+Quick rooms need no account. Saved rooms require each player to unlock their own Keeper vault and have one available private garden Doodle Coin when first joining. The public game launcher does not access the Keeper vault or file library. See `DOODLETICK.md`.
